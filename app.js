@@ -95,7 +95,11 @@ function setupSPARouting() {
             'departments': 'Departments',
             'settings': 'Settings',
             'clients': 'Clients',
-            'layout': 'Layout Generator'
+            'layout': 'Layout Generator',
+            'building': 'Building Module',
+            'singleplot': 'Single Plot Module',
+            'ual': 'UAL Module',
+            'landsurvey': 'Land Survey Module'
         };
         if (pageTitle && titles[cleanHash]) {
             pageTitle.textContent = titles[cleanHash];
@@ -333,7 +337,11 @@ function setupModals() {
         'btn-new-discussion': 'modal-discussion',
         'btn-new-group': 'modal-start-direct-chat',
         'btn-docs-add': 'modal-upload-doc',
-        'btn-add-department': 'modal-department'
+        'btn-add-department': 'modal-department',
+        'btn-add-building': 'modal-building',
+        'btn-add-singleplot': 'modal-singleplot',
+        'btn-add-ual': 'modal-ual',
+        'btn-add-landsurvey': 'modal-landsurvey'
     };
 
     Object.keys(triggers).forEach(btnId => {
@@ -387,7 +395,11 @@ function setupFormActions() {
         'form-new-discussion': 'api.php?action=create_discussion',
         'form-upload-document': 'api.php?action=upload_document',
         'form-new-department': 'api.php?action=create_department',
-        'form-edit-department': 'api.php?action=update_department'
+        'form-edit-department': 'api.php?action=update_department',
+        'form-building': 'api.php',
+        'form-singleplot': 'api.php',
+        'form-ual': 'api.php',
+        'form-landsurvey': 'api.php'
     };
 
     Object.keys(forms).forEach(formId => {
@@ -3001,3 +3013,234 @@ function setupLayoutModule() {
         });
     });
 }
+
+// ==========================================================================
+// REAL ESTATE MODULES LOGIC
+// ==========================================================================
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Helper function for search filtering
+    function setupModuleSearch(inputId, tbodyId) {
+        const input = document.getElementById(inputId);
+        const tbody = document.getElementById(tbodyId);
+        if (!input || !tbody) return;
+        
+        input.addEventListener('input', function(e) {
+            const term = e.target.value.toLowerCase();
+            const rows = tbody.querySelectorAll('tr');
+            rows.forEach(row => {
+                // If it's the "No records found" row, skip hiding logic based on term
+                if (row.children.length === 1) return;
+                
+                const text = row.textContent.toLowerCase();
+                if (text.includes(term)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        });
+    }
+
+    // Setup Searches
+    setupModuleSearch('building-search', 'buildings-tbody');
+    setupModuleSearch('singleplot-search', 'singleplot-tbody');
+    setupModuleSearch('ual-search', 'ual-tbody');
+    setupModuleSearch('landsurvey-search', 'landsurvey-tbody');
+
+    // Edit Building
+    document.querySelectorAll('.btn-edit-building').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const data = JSON.parse(this.dataset.json);
+            document.getElementById('modal-building-title').textContent = 'Edit Building';
+            document.getElementById('building-action').value = 'update_building';
+            document.getElementById('building-id').value = data.id;
+            document.getElementById('building-name').value = data.name;
+            document.getElementById('building-type').value = data.type;
+            document.getElementById('building-address').value = data.address;
+            document.getElementById('building-floors').value = data.total_floors;
+            document.getElementById('building-units').value = data.total_units;
+            document.getElementById('building-area').value = data.total_area;
+            document.getElementById('building-owner').value = data.owner_name;
+            document.getElementById('building-contact').value = data.contact_number;
+            document.getElementById('building-status').value = data.status;
+            document.getElementById('modal-building').classList.add('active');
+        });
+    });
+
+    // Delete Building
+    document.querySelectorAll('.btn-delete-building').forEach(btn => {
+        btn.addEventListener('click', function() {
+            if (confirm("Are you sure you want to delete this building?")) {
+                const id = this.dataset.id;
+                const fd = new FormData();
+                fd.append('action', 'delete_building');
+                fd.append('id', id);
+                fetch('api.php', { method: 'POST', body: fd })
+                    .then(r => r.json())
+                    .then(res => {
+                        if (res.success) location.reload();
+                        else alert(res.message);
+                    });
+            }
+        });
+    });
+
+    // Reset Building Form on Add
+    const btnAddBuilding = document.getElementById('btn-add-building');
+    if(btnAddBuilding) {
+        btnAddBuilding.addEventListener('click', function() {
+            document.getElementById('form-building').reset();
+            document.getElementById('modal-building-title').textContent = 'Add Building';
+            document.getElementById('building-action').value = 'create_building';
+            document.getElementById('building-id').value = '';
+        });
+    }
+
+    // Edit Single Plot
+    document.querySelectorAll('.btn-edit-singleplot').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const data = JSON.parse(this.dataset.json);
+            document.getElementById('modal-singleplot-title').textContent = 'Edit Plot';
+            document.getElementById('singleplot-action').value = 'update_single_plot';
+            document.getElementById('singleplot-id').value = data.id;
+            document.getElementById('sp-plot').value = data.plot_number;
+            document.getElementById('sp-layout').value = data.layout_name;
+            document.getElementById('sp-survey').value = data.survey_number;
+            document.getElementById('sp-area').value = data.area;
+            document.getElementById('sp-location').value = data.location;
+            document.getElementById('sp-price').value = data.price;
+            document.getElementById('sp-facing').value = data.facing_direction;
+            document.getElementById('sp-status').value = data.status;
+            document.getElementById('sp-owner').value = data.owner_name;
+            document.getElementById('modal-singleplot').classList.add('active');
+        });
+    });
+
+    // Delete Single Plot
+    document.querySelectorAll('.btn-delete-singleplot').forEach(btn => {
+        btn.addEventListener('click', function() {
+            if (confirm("Are you sure you want to delete this plot?")) {
+                const id = this.dataset.id;
+                const fd = new FormData();
+                fd.append('action', 'delete_single_plot');
+                fd.append('id', id);
+                fetch('api.php', { method: 'POST', body: fd })
+                    .then(r => r.json())
+                    .then(res => {
+                        if (res.success) location.reload();
+                        else alert(res.message);
+                    });
+            }
+        });
+    });
+
+    // Reset Single Plot Form on Add
+    const btnAddSinglePlot = document.getElementById('btn-add-singleplot');
+    if(btnAddSinglePlot) {
+        btnAddSinglePlot.addEventListener('click', function() {
+            document.getElementById('form-singleplot').reset();
+            document.getElementById('modal-singleplot-title').textContent = 'Add Plot';
+            document.getElementById('singleplot-action').value = 'create_single_plot';
+            document.getElementById('singleplot-id').value = '';
+        });
+    }
+
+    // Edit UAL
+    document.querySelectorAll('.btn-edit-ual').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const data = JSON.parse(this.dataset.json);
+            document.getElementById('modal-ual-title').textContent = 'Edit UAL Record';
+            document.getElementById('ual-action').value = 'update_ual_record';
+            document.getElementById('ual-id').value = data.id;
+            document.getElementById('ual-case').value = data.case_number;
+            document.getElementById('ual-owner').value = data.owner_name;
+            document.getElementById('ual-address').value = data.address;
+            document.getElementById('ual-total').value = data.total_land_area;
+            document.getElementById('ual-limit').value = data.gov_ceiling_limit;
+            document.getElementById('ual-excess').value = data.excess_land_area;
+            document.getElementById('ual-order').value = data.gov_order_number;
+            document.getElementById('ual-status').value = data.approval_status;
+            document.getElementById('ual-remarks').value = data.remarks;
+            document.getElementById('modal-ual').classList.add('active');
+        });
+    });
+
+    // Delete UAL
+    document.querySelectorAll('.btn-delete-ual').forEach(btn => {
+        btn.addEventListener('click', function() {
+            if (confirm("Are you sure you want to delete this UAL record?")) {
+                const id = this.dataset.id;
+                const fd = new FormData();
+                fd.append('action', 'delete_ual_record');
+                fd.append('id', id);
+                fetch('api.php', { method: 'POST', body: fd })
+                    .then(r => r.json())
+                    .then(res => {
+                        if (res.success) location.reload();
+                        else alert(res.message);
+                    });
+            }
+        });
+    });
+
+    // Reset UAL Form on Add
+    const btnAddUal = document.getElementById('btn-add-ual');
+    if(btnAddUal) {
+        btnAddUal.addEventListener('click', function() {
+            document.getElementById('form-ual').reset();
+            document.getElementById('modal-ual-title').textContent = 'Add UAL Record';
+            document.getElementById('ual-action').value = 'create_ual_record';
+            document.getElementById('ual-id').value = '';
+        });
+    }
+
+    // Edit Land Survey
+    document.querySelectorAll('.btn-edit-landsurvey').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const data = JSON.parse(this.dataset.json);
+            document.getElementById('modal-landsurvey-title').textContent = 'Edit Survey Record';
+            document.getElementById('landsurvey-action').value = 'update_land_survey';
+            document.getElementById('landsurvey-id').value = data.id;
+            document.getElementById('ls-survey').value = data.survey_number;
+            document.getElementById('ls-village').value = data.village_name;
+            document.getElementById('ls-taluk').value = data.taluk;
+            document.getElementById('ls-district').value = data.district;
+            document.getElementById('ls-type').value = data.land_type;
+            document.getElementById('ls-owner').value = data.owner_name;
+            document.getElementById('ls-area').value = data.total_area;
+            document.getElementById('ls-lat').value = data.latitude;
+            document.getElementById('ls-long').value = data.longitude;
+            document.getElementById('modal-landsurvey').classList.add('active');
+        });
+    });
+
+    // Delete Land Survey
+    document.querySelectorAll('.btn-delete-landsurvey').forEach(btn => {
+        btn.addEventListener('click', function() {
+            if (confirm("Are you sure you want to delete this survey record?")) {
+                const id = this.dataset.id;
+                const fd = new FormData();
+                fd.append('action', 'delete_land_survey');
+                fd.append('id', id);
+                fetch('api.php', { method: 'POST', body: fd })
+                    .then(r => r.json())
+                    .then(res => {
+                        if (res.success) location.reload();
+                        else alert(res.message);
+                    });
+            }
+        });
+    });
+
+    // Reset Land Survey Form on Add
+    const btnAddLandSurvey = document.getElementById('btn-add-landsurvey');
+    if(btnAddLandSurvey) {
+        btnAddLandSurvey.addEventListener('click', function() {
+            document.getElementById('form-landsurvey').reset();
+            document.getElementById('modal-landsurvey-title').textContent = 'Add Survey Record';
+            document.getElementById('landsurvey-action').value = 'create_land_survey';
+            document.getElementById('landsurvey-id').value = '';
+        });
+    }
+});

@@ -1079,6 +1079,231 @@ try {
                 'success' => true,
                 'message' => 'Layout saved successfully.'
             ];
+        } else if ($action === 'create_building') {
+            $name = trim($_POST['name'] ?? '');
+            $type = trim($_POST['type'] ?? '');
+            $address = trim($_POST['address'] ?? '');
+            $totalFloors = (int)($_POST['total_floors'] ?? 0);
+            $totalUnits = (int)($_POST['total_units'] ?? 0);
+            $totalArea = (float)($_POST['total_area'] ?? 0);
+            $ownerName = trim($_POST['owner_name'] ?? '');
+            $contactNumber = trim($_POST['contact_number'] ?? '');
+            $status = trim($_POST['status'] ?? 'Available');
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
+
+            if (empty($name)) throw new Exception("Building name is required.");
+
+            $documentPath = null;
+            if (isset($_FILES['document']) && $_FILES['document']['error'] === UPLOAD_ERR_OK) {
+                $documentPath = 'uploads/' . time() . '_' . basename($_FILES['document']['name']);
+                move_uploaded_file($_FILES['document']['tmp_name'], $documentPath);
+            }
+
+            $stmt = $pdo->prepare("INSERT INTO `buildings` (`name`, `type`, `address`, `total_floors`, `total_units`, `total_area`, `owner_name`, `contact_number`, `status`, `document_path`, `org_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$name, $type, $address, $totalFloors, $totalUnits, $totalArea, $ownerName, $contactNumber, $status, $documentPath, $meOrgId]);
+
+            $response = ['success' => true, 'message' => 'Building created successfully'];
+        } else if ($action === 'update_building') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            $name = trim($_POST['name'] ?? '');
+            $type = trim($_POST['type'] ?? '');
+            $address = trim($_POST['address'] ?? '');
+            $totalFloors = (int)($_POST['total_floors'] ?? 0);
+            $totalUnits = (int)($_POST['total_units'] ?? 0);
+            $totalArea = (float)($_POST['total_area'] ?? 0);
+            $ownerName = trim($_POST['owner_name'] ?? '');
+            $contactNumber = trim($_POST['contact_number'] ?? '');
+            $status = trim($_POST['status'] ?? 'Available');
+
+            if (empty($name)) throw new Exception("Building name is required.");
+
+            $docUpdate = "";
+            $params = [$name, $type, $address, $totalFloors, $totalUnits, $totalArea, $ownerName, $contactNumber, $status];
+
+            if (isset($_FILES['document']) && $_FILES['document']['error'] === UPLOAD_ERR_OK) {
+                $documentPath = 'uploads/' . time() . '_' . basename($_FILES['document']['name']);
+                move_uploaded_file($_FILES['document']['tmp_name'], $documentPath);
+                $docUpdate = ", `document_path` = ?";
+                $params[] = $documentPath;
+            }
+
+            $params[] = $id;
+
+            $stmt = $pdo->prepare("UPDATE `buildings` SET `name`=?, `type`=?, `address`=?, `total_floors`=?, `total_units`=?, `total_area`=?, `owner_name`=?, `contact_number`=?, `status`=? $docUpdate WHERE id=?");
+            $stmt->execute($params);
+
+            $response = ['success' => true, 'message' => 'Building updated successfully'];
+        } else if ($action === 'delete_building') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            $pdo->prepare("DELETE FROM `buildings` WHERE id = ?")->execute([$id]);
+            $response = ['success' => true, 'message' => 'Building deleted successfully'];
+            
+        } else if ($action === 'create_single_plot') {
+            $plotNumber = trim($_POST['plot_number'] ?? '');
+            $layoutName = trim($_POST['layout_name'] ?? '');
+            $surveyNumber = trim($_POST['survey_number'] ?? '');
+            $area = (float)($_POST['area'] ?? 0);
+            $location = trim($_POST['location'] ?? '');
+            $price = (float)($_POST['price'] ?? 0);
+            $facingDirection = trim($_POST['facing_direction'] ?? '');
+            $status = trim($_POST['status'] ?? 'Available');
+            $ownerName = trim($_POST['owner_name'] ?? '');
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
+
+            if (empty($plotNumber)) throw new Exception("Plot number is required.");
+
+            $stmt = $pdo->prepare("INSERT INTO `single_plots` (`plot_number`, `layout_name`, `survey_number`, `area`, `location`, `price`, `facing_direction`, `status`, `owner_name`, `org_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$plotNumber, $layoutName, $surveyNumber, $area, $location, $price, $facingDirection, $status, $ownerName, $meOrgId]);
+
+            $response = ['success' => true, 'message' => 'Plot created successfully'];
+        } else if ($action === 'update_single_plot') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            $plotNumber = trim($_POST['plot_number'] ?? '');
+            $layoutName = trim($_POST['layout_name'] ?? '');
+            $surveyNumber = trim($_POST['survey_number'] ?? '');
+            $area = (float)($_POST['area'] ?? 0);
+            $location = trim($_POST['location'] ?? '');
+            $price = (float)($_POST['price'] ?? 0);
+            $facingDirection = trim($_POST['facing_direction'] ?? '');
+            $status = trim($_POST['status'] ?? 'Available');
+            $ownerName = trim($_POST['owner_name'] ?? '');
+
+            if (empty($plotNumber)) throw new Exception("Plot number is required.");
+
+            $stmt = $pdo->prepare("UPDATE `single_plots` SET `plot_number`=?, `layout_name`=?, `survey_number`=?, `area`=?, `location`=?, `price`=?, `facing_direction`=?, `status`=?, `owner_name`=? WHERE id=?");
+            $stmt->execute([$plotNumber, $layoutName, $surveyNumber, $area, $location, $price, $facingDirection, $status, $ownerName, $id]);
+
+            $response = ['success' => true, 'message' => 'Plot updated successfully'];
+        } else if ($action === 'delete_single_plot') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            $pdo->prepare("DELETE FROM `single_plots` WHERE id = ?")->execute([$id]);
+            $response = ['success' => true, 'message' => 'Plot deleted successfully'];
+
+        } else if ($action === 'create_ual_record') {
+            $caseNumber = trim($_POST['case_number'] ?? '');
+            $ownerName = trim($_POST['owner_name'] ?? '');
+            $address = trim($_POST['address'] ?? '');
+            $totalLandArea = (float)($_POST['total_land_area'] ?? 0);
+            $govCeilingLimit = (float)($_POST['gov_ceiling_limit'] ?? 0);
+            $excessLandArea = (float)($_POST['excess_land_area'] ?? 0);
+            $approvalStatus = trim($_POST['approval_status'] ?? 'Pending');
+            $govOrderNumber = trim($_POST['gov_order_number'] ?? '');
+            $remarks = trim($_POST['remarks'] ?? '');
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
+
+            if (empty($caseNumber)) throw new Exception("Case number is required.");
+
+            $documentPath = null;
+            if (isset($_FILES['document']) && $_FILES['document']['error'] === UPLOAD_ERR_OK) {
+                $documentPath = 'uploads/' . time() . '_' . basename($_FILES['document']['name']);
+                move_uploaded_file($_FILES['document']['tmp_name'], $documentPath);
+            }
+
+            $stmt = $pdo->prepare("INSERT INTO `ual_records` (`case_number`, `owner_name`, `address`, `total_land_area`, `gov_ceiling_limit`, `excess_land_area`, `approval_status`, `gov_order_number`, `remarks`, `document_path`, `org_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$caseNumber, $ownerName, $address, $totalLandArea, $govCeilingLimit, $excessLandArea, $approvalStatus, $govOrderNumber, $remarks, $documentPath, $meOrgId]);
+
+            $response = ['success' => true, 'message' => 'UAL record created successfully'];
+        } else if ($action === 'update_ual_record') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            $caseNumber = trim($_POST['case_number'] ?? '');
+            $ownerName = trim($_POST['owner_name'] ?? '');
+            $address = trim($_POST['address'] ?? '');
+            $totalLandArea = (float)($_POST['total_land_area'] ?? 0);
+            $govCeilingLimit = (float)($_POST['gov_ceiling_limit'] ?? 0);
+            $excessLandArea = (float)($_POST['excess_land_area'] ?? 0);
+            $approvalStatus = trim($_POST['approval_status'] ?? 'Pending');
+            $govOrderNumber = trim($_POST['gov_order_number'] ?? '');
+            $remarks = trim($_POST['remarks'] ?? '');
+
+            if (empty($caseNumber)) throw new Exception("Case number is required.");
+
+            $docUpdate = "";
+            $params = [$caseNumber, $ownerName, $address, $totalLandArea, $govCeilingLimit, $excessLandArea, $approvalStatus, $govOrderNumber, $remarks];
+
+            if (isset($_FILES['document']) && $_FILES['document']['error'] === UPLOAD_ERR_OK) {
+                $documentPath = 'uploads/' . time() . '_' . basename($_FILES['document']['name']);
+                move_uploaded_file($_FILES['document']['tmp_name'], $documentPath);
+                $docUpdate = ", `document_path` = ?";
+                $params[] = $documentPath;
+            }
+
+            $params[] = $id;
+
+            $stmt = $pdo->prepare("UPDATE `ual_records` SET `case_number`=?, `owner_name`=?, `address`=?, `total_land_area`=?, `gov_ceiling_limit`=?, `excess_land_area`=?, `approval_status`=?, `gov_order_number`=?, `remarks`=? $docUpdate WHERE id=?");
+            $stmt->execute($params);
+
+            $response = ['success' => true, 'message' => 'UAL record updated successfully'];
+        } else if ($action === 'delete_ual_record') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            $pdo->prepare("DELETE FROM `ual_records` WHERE id = ?")->execute([$id]);
+            $response = ['success' => true, 'message' => 'UAL record deleted successfully'];
+
+        } else if ($action === 'create_land_survey') {
+            $surveyNumber = trim($_POST['survey_number'] ?? '');
+            $villageName = trim($_POST['village_name'] ?? '');
+            $taluk = trim($_POST['taluk'] ?? '');
+            $district = trim($_POST['district'] ?? '');
+            $landType = trim($_POST['land_type'] ?? '');
+            $ownerName = trim($_POST['owner_name'] ?? '');
+            $totalArea = (float)($_POST['total_area'] ?? 0);
+            $latitude = trim($_POST['latitude'] ?? '');
+            $longitude = trim($_POST['longitude'] ?? '');
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
+
+            if (empty($surveyNumber)) throw new Exception("Survey number is required.");
+
+            $documentPath = null;
+            if (isset($_FILES['document']) && $_FILES['document']['error'] === UPLOAD_ERR_OK) {
+                $documentPath = 'uploads/' . time() . '_' . basename($_FILES['document']['name']);
+                move_uploaded_file($_FILES['document']['tmp_name'], $documentPath);
+            }
+
+            $stmt = $pdo->prepare("INSERT INTO `land_surveys` (`survey_number`, `village_name`, `taluk`, `district`, `land_type`, `owner_name`, `total_area`, `latitude`, `longitude`, `document_path`, `org_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$surveyNumber, $villageName, $taluk, $district, $landType, $ownerName, $totalArea, $latitude, $longitude, $documentPath, $meOrgId]);
+
+            $response = ['success' => true, 'message' => 'Land survey created successfully'];
+        } else if ($action === 'update_land_survey') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            $surveyNumber = trim($_POST['survey_number'] ?? '');
+            $villageName = trim($_POST['village_name'] ?? '');
+            $taluk = trim($_POST['taluk'] ?? '');
+            $district = trim($_POST['district'] ?? '');
+            $landType = trim($_POST['land_type'] ?? '');
+            $ownerName = trim($_POST['owner_name'] ?? '');
+            $totalArea = (float)($_POST['total_area'] ?? 0);
+            $latitude = trim($_POST['latitude'] ?? '');
+            $longitude = trim($_POST['longitude'] ?? '');
+
+            if (empty($surveyNumber)) throw new Exception("Survey number is required.");
+
+            $docUpdate = "";
+            $params = [$surveyNumber, $villageName, $taluk, $district, $landType, $ownerName, $totalArea, $latitude, $longitude];
+
+            if (isset($_FILES['document']) && $_FILES['document']['error'] === UPLOAD_ERR_OK) {
+                $documentPath = 'uploads/' . time() . '_' . basename($_FILES['document']['name']);
+                move_uploaded_file($_FILES['document']['tmp_name'], $documentPath);
+                $docUpdate = ", `document_path` = ?";
+                $params[] = $documentPath;
+            }
+
+            $params[] = $id;
+
+            $stmt = $pdo->prepare("UPDATE `land_surveys` SET `survey_number`=?, `village_name`=?, `taluk`=?, `district`=?, `land_type`=?, `owner_name`=?, `total_area`=?, `latitude`=?, `longitude`=? $docUpdate WHERE id=?");
+            $stmt->execute($params);
+
+            $response = ['success' => true, 'message' => 'Land survey updated successfully'];
+        } else if ($action === 'delete_land_survey') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            $pdo->prepare("DELETE FROM `land_surveys` WHERE id = ?")->execute([$id]);
+            $response = ['success' => true, 'message' => 'Land survey deleted successfully'];
         }
 
         if ($action === 'get_pipeline_stage_details') {
