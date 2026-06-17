@@ -48,6 +48,30 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
                     <span>Dashboard</span>
                 </a>
             </li>
+            <li class="nav-item" data-tab="building">
+                <a href="#building">
+                    <i data-lucide="building"></i>
+                    <span>Buildings</span>
+                </a>
+            </li>
+            <li class="nav-item" data-tab="singleplot">
+                <a href="#singleplot">
+                    <i data-lucide="map"></i>
+                    <span>Single Plots</span>
+                </a>
+            </li>
+            <li class="nav-item" data-tab="ual">
+                <a href="#ual">
+                    <i data-lucide="file-text"></i>
+                    <span>UAL Records</span>
+                </a>
+            </li>
+            <li class="nav-item" data-tab="landsurvey">
+                <a href="#landsurvey">
+                    <i data-lucide="map-pin"></i>
+                    <span>Land Surveys</span>
+                </a>
+            </li>
             <li class="nav-item" data-tab="projects">
                 <a href="#projects">
                     <i data-lucide="folder"></i>

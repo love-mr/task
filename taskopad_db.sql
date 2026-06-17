@@ -122,3 +122,74 @@ CREATE TABLE `notifications` (
 -- Dumping data for table `employees`
 INSERT INTO `employees` (`id`, `name`, `role`, `email`, `password`, `emp_code`, `avatar`) VALUES
 (4, 'SELVAKUMAR J', 'Project Lead', 'selvakumar@vyalasoftware.com', '$2y$10$gTljku/.7lAnHTtSq.mLeePG/Mu6OIfoWwSadAcISmYmkkis8uvAG', 'T-130555', 'SJ');
+
+-- Table structure for table `buildings`
+DROP TABLE IF EXISTS `buildings`;
+CREATE TABLE `buildings` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `name` VARCHAR(255) NOT NULL,
+  `type` VARCHAR(100) DEFAULT NULL,
+  `address` TEXT DEFAULT NULL,
+  `total_floors` INT DEFAULT 0,
+  `total_units` INT DEFAULT 0,
+  `total_area` DECIMAL(10,2) DEFAULT 0,
+  `owner_name` VARCHAR(255) DEFAULT NULL,
+  `contact_number` VARCHAR(50) DEFAULT NULL,
+  `status` ENUM('Available','Sold','Rented') DEFAULT 'Available',
+  `document_path` VARCHAR(500) DEFAULT NULL,
+  `org_id` INT NOT NULL DEFAULT 1,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- Table structure for table `single_plots`
+DROP TABLE IF EXISTS `single_plots`;
+CREATE TABLE `single_plots` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `plot_number` VARCHAR(100) NOT NULL,
+  `layout_name` VARCHAR(255) DEFAULT NULL,
+  `survey_number` VARCHAR(100) DEFAULT NULL,
+  `area` DECIMAL(10,2) DEFAULT 0,
+  `location` VARCHAR(255) DEFAULT NULL,
+  `price` DECIMAL(15,2) DEFAULT 0,
+  `facing_direction` VARCHAR(100) DEFAULT NULL,
+  `status` VARCHAR(100) DEFAULT 'Available',
+  `owner_name` VARCHAR(255) DEFAULT NULL,
+  `org_id` INT NOT NULL DEFAULT 1,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- Table structure for table `ual_records`
+DROP TABLE IF EXISTS `ual_records`;
+CREATE TABLE `ual_records` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `case_number` VARCHAR(100) NOT NULL,
+  `owner_name` VARCHAR(255) DEFAULT NULL,
+  `address` TEXT DEFAULT NULL,
+  `total_land_area` DECIMAL(10,2) DEFAULT 0,
+  `gov_ceiling_limit` DECIMAL(10,2) DEFAULT 0,
+  `excess_land_area` DECIMAL(10,2) DEFAULT 0,
+  `approval_status` VARCHAR(100) DEFAULT 'Pending',
+  `gov_order_number` VARCHAR(100) DEFAULT NULL,
+  `document_path` VARCHAR(500) DEFAULT NULL,
+  `remarks` TEXT DEFAULT NULL,
+  `org_id` INT NOT NULL DEFAULT 1,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- Table structure for table `land_surveys`
+DROP TABLE IF EXISTS `land_surveys`;
+CREATE TABLE `land_surveys` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `survey_number` VARCHAR(100) NOT NULL,
+  `village_name` VARCHAR(255) DEFAULT NULL,
+  `taluk` VARCHAR(255) DEFAULT NULL,
+  `district` VARCHAR(255) DEFAULT NULL,
+  `land_type` VARCHAR(100) DEFAULT NULL,
+  `owner_name` VARCHAR(255) DEFAULT NULL,
+  `total_area` DECIMAL(10,2) DEFAULT 0,
+  `latitude` VARCHAR(50) DEFAULT NULL,
+  `longitude` VARCHAR(50) DEFAULT NULL,
+  `document_path` VARCHAR(500) DEFAULT NULL,
+  `org_id` INT NOT NULL DEFAULT 1,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
