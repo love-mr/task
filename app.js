@@ -38,6 +38,8 @@ document.addEventListener('DOMContentLoaded', function() {
     setupAttendanceFiltersAndExport();
     setupUsersManagement();
     setupLayoutModule();
+    setupDashboardTriggers();
+    setupTaskEditFeatures();
 });
 
 // ==========================================================================
@@ -341,7 +343,8 @@ function setupModals() {
         'btn-add-building': 'modal-building',
         'btn-add-singleplot': 'modal-singleplot',
         'btn-add-ual': 'modal-ual',
-        'btn-add-landsurvey': 'modal-landsurvey'
+        'btn-add-landsurvey': 'modal-landsurvey',
+        'btn-view-all-notifications': 'modal-all-notifications'
     };
 
     Object.keys(triggers).forEach(btnId => {
@@ -387,6 +390,7 @@ function setupFormActions() {
         'form-edit-client': 'api.php?action=update_client',
         'form-new-project': 'api.php?action=create_project',
         'form-new-task': 'api.php?action=create_task',
+        'form-edit-task': 'api.php?action=update_task_details',
         'form-new-timesheet': 'api.php?action=create_timesheet',
         'form-new-employee': 'api.php?action=create_employee',
         'form-update-settings': 'api.php?action=update_settings',
@@ -2930,10 +2934,11 @@ function setupLayoutModule() {
                         <label class="form-label" style="font-size: 11px;">Task Title</label>
                         <input type="text" class="form-control lq-title" placeholder="e.g. Initial Survey">
                     </div>
-                    <div class="form-group" style="flex: 1.5; margin-bottom: 0;">
+                    <div class="form-group" style="flex: 1.5; margin-bottom: 0; position: relative;">
                         <label class="form-label" style="font-size: 11px;">Assignee (Emp ID / Name)</label>
-                        <!-- For simplicity we use a text input, but ideally this would be a select populated via PHP -->
-                        <input type="text" class="form-control lq-assignee" placeholder="Emp ID or Name">
+                        <input type="text" class="form-control lq-assignee-input" placeholder="Type name..." autocomplete="off">
+                        <input type="hidden" class="lq-assignee-val">
+                        <div class="lq-assignee-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); max-height: 180px; overflow-y: auto; z-index: 9999;"></div>
                     </div>
                     <div class="form-group" style="flex: 1; margin-bottom: 0;">
                         <label class="form-label" style="font-size: 11px;">Priority</label>
@@ -2951,6 +2956,70 @@ function setupLayoutModule() {
             `;
             wrapper.insertAdjacentHTML('beforeend', html);
         }
+
+        // Setup dropdown events
+        const rows = wrapper.querySelectorAll('.layout-task-row');
+        const employeesList = window.VYALA_TASKPAD_DASHBOARD_DATA?.employees || [];
+
+        rows.forEach(row => {
+            const input = row.querySelector('.lq-assignee-input');
+            const hidden = row.querySelector('.lq-assignee-val');
+            const dropdown = row.querySelector('.lq-assignee-dropdown');
+
+            function renderDropdown(filterText = '') {
+                const query = filterText.toLowerCase().trim();
+                const filtered = employeesList.filter(e => e.name.toLowerCase().includes(query));
+
+                dropdown.innerHTML = '';
+                if (filtered.length === 0) {
+                    dropdown.innerHTML = '<div style="padding: 8px 12px; color: #94a3b8; font-size: 12px;">No matches</div>';
+                } else {
+                    filtered.forEach(e => {
+                        const item = document.createElement('div');
+                        item.className = 'dropdown-item';
+                        item.style.padding = '8px 12px';
+                        item.style.cursor = 'pointer';
+                        item.style.fontSize = '12px';
+                        item.style.color = '#334155';
+                        item.style.borderBottom = '1px solid #f1f5f9';
+                        item.innerText = e.name;
+                        
+                        item.addEventListener('mouseenter', () => {
+                            item.style.background = '#f1f5f9';
+                        });
+                        item.addEventListener('mouseleave', () => {
+                            item.style.background = 'transparent';
+                        });
+
+                        item.addEventListener('mousedown', (evt) => {
+                            evt.preventDefault();
+                            input.value = e.name;
+                            hidden.value = e.id;
+                            dropdown.style.display = 'none';
+                        });
+                        dropdown.appendChild(item);
+                    });
+                }
+            }
+
+            input.addEventListener('focus', () => {
+                renderDropdown(input.value);
+                dropdown.style.display = 'block';
+            });
+
+            input.addEventListener('input', () => {
+                hidden.value = '';
+                renderDropdown(input.value);
+                dropdown.style.display = 'block';
+            });
+
+            input.addEventListener('blur', () => {
+                setTimeout(() => {
+                    dropdown.style.display = 'none';
+                }, 150);
+            });
+        });
+
         container.style.display = 'block';
     });
 
@@ -2970,11 +3039,25 @@ function setupLayoutModule() {
 
         const taskRows = wrapper.querySelectorAll('.layout-task-row');
         const sequenceData = [];
+        const employeesList = window.VYALA_TASKPAD_DASHBOARD_DATA?.employees || [];
 
         taskRows.forEach((row, idx) => {
+            const assigneeInput = row.querySelector('.lq-assignee-input');
+            const assigneeVal = row.querySelector('.lq-assignee-val');
+            let assignee = assigneeVal ? assigneeVal.value : '';
+            if (!assignee && assigneeInput) {
+                const name = assigneeInput.value.toLowerCase().trim();
+                const matched = employeesList.find(e => e.name.toLowerCase() === name);
+                if (matched) {
+                    assignee = matched.id;
+                } else {
+                    assignee = name;
+                }
+            }
+
             sequenceData.push({
                 title: row.querySelector('.lq-title').value,
-                assignee: row.querySelector('.lq-assignee').value,
+                assignee: assignee,
                 priority: row.querySelector('.lq-priority').value,
                 days: parseInt(row.querySelector('.lq-days').value) || 1,
                 order: idx + 1
@@ -3471,3 +3554,111 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
 });
+
+function setupDashboardTriggers() {
+    // 1. Quick Action Buttons
+    document.querySelectorAll('.rsk-qa-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const act = btn.getAttribute('data-action');
+            if (act === 'new-project') {
+                const m = document.getElementById('modal-project');
+                if (m) m.classList.add('active');
+            } else if (act === 'add-client') {
+                const m = document.getElementById('modal-client');
+                if (m) m.classList.add('active');
+            } else if (act === 'new-survey') {
+                const m = document.getElementById('modal-landsurvey');
+                if (m) m.classList.add('active');
+            } else if (act === 'upload-document') {
+                const m = document.getElementById('modal-upload-doc');
+                if (m) m.classList.add('active');
+            } else if (act === 'noc-tracker') {
+                window.location.hash = '#ual';
+            } else if (act === 'payment-entry') {
+                const m = document.getElementById('modal-logtime');
+                if (m) m.classList.add('active');
+            } else if (act === 'task-manager') {
+                window.location.hash = '#tasks';
+            } else if (act === 'reports') {
+                window.location.hash = '#reports';
+            }
+        });
+    });
+
+    // 2. Tab Trigger Click handler modifications (Status filtering support)
+    document.querySelectorAll('.tab-trigger').forEach(trigger => {
+        trigger.addEventListener('click', function(e) {
+            const target = trigger.getAttribute('data-target');
+            const statusFilter = trigger.getAttribute('data-filter-status');
+            
+            if (statusFilter && typeof currentProjectsFilterStatus !== 'undefined') {
+                currentProjectsFilterStatus = statusFilter;
+                const statusBtn = document.getElementById('projects-status-filter-toggle');
+                if (statusBtn) {
+                    statusBtn.innerHTML = `Status: ${statusFilter} <i data-lucide="chevron-down"></i>`;
+                    if (typeof lucide !== 'undefined') lucide.createIcons();
+                }
+                filterAndSortProjects();
+            }
+
+            if (target) {
+                window.location.hash = `#${target}`;
+            }
+        });
+    });
+
+    // 3. Make metrics cards (.rsk-card-sm) clickable
+    document.querySelectorAll('.rsk-card-sm').forEach(card => {
+        card.addEventListener('click', function(e) {
+            // Avoid recursion if the link itself was clicked directly
+            if (e.target.closest('.rsk-card-link')) return;
+            const link = card.querySelector('.rsk-card-link');
+            if (link) {
+                link.click();
+            }
+        });
+    });
+}
+
+function setupTaskEditFeatures() {
+    // Edit task button click handler (delegated)
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.btn-edit-task');
+        if (btn) {
+            e.preventDefault();
+            const taskId = btn.getAttribute('data-id');
+            const title = btn.getAttribute('data-title');
+            const due = btn.getAttribute('data-due');
+            const days = btn.getAttribute('data-days');
+
+            const modal = document.getElementById('modal-edit-task');
+            if (modal) {
+                document.getElementById('edit-tk-id').value = taskId;
+                document.getElementById('edit-tk-title').value = title;
+                document.getElementById('edit-tk-due').value = due || '';
+                document.getElementById('edit-tk-days').value = days || '1';
+                modal.classList.add('active');
+            }
+        }
+    });
+
+    // Edit task double-click handler on kanban card (delegated)
+    document.addEventListener('dblclick', function(e) {
+        const card = e.target.closest('.kanban-card');
+        if (card) {
+            const taskId = card.getAttribute('data-task-id');
+            const tasks = window.VYALA_TASKPAD_DASHBOARD_DATA?.tasks || [];
+            const t = tasks.find(item => item.id == taskId);
+            if (t) {
+                const modal = document.getElementById('modal-edit-task');
+                if (modal) {
+                    document.getElementById('edit-tk-id').value = t.id;
+                    document.getElementById('edit-tk-title').value = t.title;
+                    document.getElementById('edit-tk-due').value = t.due_date || '';
+                    document.getElementById('edit-tk-days').value = t.estimated_duration || '1';
+                    modal.classList.add('active');
+                }
+            }
+        }
+    });
+}
