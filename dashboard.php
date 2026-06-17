@@ -187,245 +187,94 @@ try {
         ) ENGINE=InnoDB");
     } catch (PDOException $e) {}
 
-
-
-    // 1. Fetch Top Stats Counts
-    if ($isAdmin) {
-        $totalTasks = 0;
-        $assignedToMe = 0;
-        $dueToday = 0;
-        $pastDue = 0;
-    } else {
-        // Total Task: count of tasks assigned to me
-        $totalTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId")->fetchColumn() ?: 0;
-        
-        // Assigned to me: tasks assigned to the logged-in employee
-        $assignedToMe = $totalTasks;
-
-        // Past due tasks: tasks not completed and due date before today
-        $today = date('Y-m-d');
-        $dueToday = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND `due_date` = '$today'")->fetchColumn() ?: 0;
-        $pastDue = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND `status` != 'Completed' AND `due_date` < '$today'")->fetchColumn() ?: 0;
-    }
-
-    // RSK Approvals Dashboard Metrics
-    $rsk_totalProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_pendingProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE status = 'Pending' AND org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_approvedProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE status = 'Active' OR status = 'Completed' AND org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_rejectedProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE status IN ('Rejected', 'Query') AND org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_activeClients = $pdo->query("SELECT COUNT(*) FROM `clients` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_surveyWorks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE (title LIKE '%Survey%' OR description LIKE '%Survey%') AND status != 'Completed' AND org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_totalEmployees = $pdo->query("SELECT COUNT(*) FROM `employees` WHERE role != 'Admin' AND org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_totalTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
-
-    // --- PIPELINE & SERVICES DYNAMIC COUNTS ---
-    $pipelineRaw = $pdo->prepare("SELECT pipeline_stage, COUNT(*) as cnt FROM projects WHERE org_id = ? AND pipeline_stage IS NOT NULL AND pipeline_stage != '' GROUP BY pipeline_stage");
-    $pipelineRaw->execute([$meOrgId]);
-    $pipelineCounts = [];
-    foreach($pipelineRaw->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $pipelineCounts[$row['pipeline_stage']] = (int)$row['cnt'];
-    }
-
-    $servicesRaw = $pdo->prepare("SELECT service_type, COUNT(*) as cnt, SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as comp, SUM(CASE WHEN status!='Completed' AND status!='Rejected' THEN 1 ELSE 0 END) as pend FROM projects WHERE org_id = ? AND service_type IS NOT NULL AND service_type != '' GROUP BY service_type");
-    $servicesRaw->execute([$meOrgId]);
-    $serviceCounts = [];
-    foreach($servicesRaw->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $serviceCounts[$row['service_type']] = [
-            'total' => (int)$row['cnt'],
-            'comp'  => (int)$row['comp'],
-            'pend'  => (int)$row['pend']
-        ];
-    }
-
-    // Project status counts for donut chart
-    $statusCountsRaw = $pdo->prepare("SELECT status, COUNT(*) as cnt FROM projects WHERE org_id = ? GROUP BY status");
-    $statusCountsRaw->execute([$meOrgId]);
-    $projectStatusCounts = ['Completed'=>0,'Active'=>0,'Pending'=>0,'Rejected'=>0];
-    foreach($statusCountsRaw->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $projectStatusCounts[$row['status']] = (int)$row['cnt'];
-    }
-    // -------------------------------------------
-
-    // 2. Fetch Projects Lists
-    $projects = $pdo->prepare("
-        SELECT p.*, c.name as client_name,
-               (SELECT COUNT(*) FROM `tasks` t WHERE t.project_id = p.id) as total_tasks,
-               (SELECT COUNT(*) FROM `tasks` t WHERE t.project_id = p.id AND t.status = 'Completed') as completed_tasks,
-               (SELECT GROUP_CONCAT(pm.employee_id SEPARATOR ',') FROM `project_members` pm WHERE pm.project_id = p.id) as member_ids
-        FROM `projects` p
-        LEFT JOIN `clients` c ON p.client_id = c.id
-        WHERE p.org_id = ?
-        ORDER BY p.id ASC
-    ");
-    $projects->execute([$meOrgId]);
-    $projects = $projects->fetchAll(PDO::FETCH_ASSOC);
-
-    // Build project member details map (project_id => array of member info)
-    $projMemberDetails = [];
+    // 16. survey_management table
     try {
-        $pmRows = $pdo->prepare("
-            SELECT pm.project_id, e.id, e.name, e.avatar
-            FROM `project_members` pm
-            JOIN `employees` e ON pm.employee_id = e.id
-            WHERE e.org_id = ?
-        ");
-        $pmRows->execute([$meOrgId]);
-        $pmRows = $pmRows->fetchAll(PDO::FETCH_ASSOC);
-        foreach ($pmRows as $pmr) {
-            $projMemberDetails[$pmr['project_id']][] = $pmr;
-        }
-    } catch (PDOException $e) { $projMemberDetails = []; }
+        $pdo->exec("CREATE TABLE IF NOT EXISTS `survey_management` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY,
+            `survey_number` VARCHAR(100) NOT NULL,
+            `sub_division_number` VARCHAR(100) DEFAULT NULL,
+            `owner_name` VARCHAR(255) DEFAULT NULL,
+            `village_name` VARCHAR(255) DEFAULT NULL,
+            `taluk` VARCHAR(255) DEFAULT NULL,
+            `district` VARCHAR(255) DEFAULT NULL,
+            `land_type` VARCHAR(100) DEFAULT NULL,
+            `total_area` DECIMAL(10,2) DEFAULT 0,
+            `patta_number` VARCHAR(100) DEFAULT NULL,
+            `fmb_number` VARCHAR(100) DEFAULT NULL,
+            `latitude` VARCHAR(50) DEFAULT NULL,
+            `longitude` VARCHAR(50) DEFAULT NULL,
+            `survey_date` DATE DEFAULT NULL,
+            `status` ENUM('Pending','Verified','Rejected') DEFAULT 'Pending',
+            `document_path` VARCHAR(500) DEFAULT NULL,
+            `remarks` TEXT DEFAULT NULL,
+            `is_archived` TINYINT(1) DEFAULT 0,
+            `org_id` INT NOT NULL DEFAULT 1,
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB");
+    } catch (PDOException $e) {}
 
-    // Recent projects for dashboard card list
-    $recentProjects = array_slice($projects, 0, 6);
+    // 17. survey_history table
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS `survey_history` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY,
+            `survey_id` INT NOT NULL,
+            `action` VARCHAR(255) NOT NULL,
+            `performed_by` INT NOT NULL,
+            `details` TEXT DEFAULT NULL,
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (`survey_id`) REFERENCES `survey_management`(`id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB");
+    } catch (PDOException $e) {}
 
 
-    // 3. Fetch Tasks Lists (All & Recent)
-    if ($isAdmin) {
-        $tasksList = [];
-    } else {
-        $tasksList = $pdo->prepare("
-            SELECT t.*, p.name as project_name, e.name as employee_name, e.avatar as employee_avatar
-            FROM `tasks` t
-            JOIN `projects` p ON t.project_id = p.id
-            LEFT JOIN `employees` e ON t.assigned_to = e.id
-            WHERE t.assigned_to = ? AND t.org_id = ?
-            ORDER BY t.id DESC
-        ");
-        $tasksList->execute([$meId, $meOrgId]);
-        $tasksList = $tasksList->fetchAll(PDO::FETCH_ASSOC);
-    }
 
-    // 4. Fetch Discussions List (matching Screenshot 3 Recent Discussions)
-    $discussionsList = $pdo->prepare("
-        SELECT d.id, d.type, d.attachment_name, d.attachment_type, d.date_logged, d.created_at,
-               CASE 
-                   WHEN d.type = 'Direct' THEN (
-                       SELECT name FROM `employees` e 
-                       JOIN `discussion_members` dm ON e.id = dm.employee_id 
-                       WHERE dm.discussion_id = d.id AND dm.employee_id != ? 
-                       LIMIT 1
-                   )
-                   ELSE d.title 
-               END as title
-        FROM `discussions` d
-        WHERE d.org_id = ? AND (d.type IN ('General', 'Task')
-           OR (d.type = 'Direct' AND EXISTS (
-               SELECT 1 FROM `discussion_members` dm WHERE dm.discussion_id = d.id AND dm.employee_id = ?
-           )))
-        ORDER BY d.id ASC
-    ");
-    $discussionsList->execute([$meId, $meOrgId, $meId]);
-    $discussionsList = $discussionsList->fetchAll(PDO::FETCH_ASSOC);
+    // 1. Fetch Top Stats Counts for Real Estate Modules
+    $totalBuildings = $pdo->query("SELECT COUNT(*) FROM `buildings` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
+    $totalPlots = $pdo->query("SELECT COUNT(*) FROM `single_plots` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
+    $totalUalRecords = $pdo->query("SELECT COUNT(*) FROM `ual_records` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
+    $totalSurveys = $pdo->query("SELECT COUNT(*) FROM `land_surveys` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
 
-    // 5. Fetch Activities List (matching Screenshot 4 Activity list)
-    $activitiesList = $pdo->prepare("SELECT * FROM `activities` WHERE org_id = ? ORDER BY id ASC");
-    $activitiesList->execute([$meOrgId]);
-    $activitiesList = $activitiesList->fetchAll(PDO::FETCH_ASSOC);
-
-    // Fetch All Employees list for the directory (exclude Admin role)
-    $employeesList = $pdo->prepare("SELECT * FROM `employees` WHERE `role` != 'Admin' AND `org_id` = ? ORDER BY id ASC");
-    $employeesList->execute([$meOrgId]);
+    $projectsList = [];
+    $tasksList = [];
+    $timesheetsList = [];
+    $employeesList = $pdo->prepare("SELECT * FROM `employees` ORDER BY name ASC");
+    $employeesList->execute();
     $employeesList = $employeesList->fetchAll(PDO::FETCH_ASSOC);
 
-    // 6. Fetch Team Incomplete Tasks Counts (matching Screenshot 2)
-    // Dhanapathi R, Dinakaran S, Kalpana G (dynamic fallback for org)
-    $teamCounts = [];
-    $employees = $pdo->prepare("SELECT id, name, avatar FROM `employees` WHERE `role` != 'Admin' AND `org_id` = ? LIMIT 3");
-    $employees->execute([$meOrgId]);
-    $employees = $employees->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($employees as $emp) {
-        $stmtInc = $pdo->prepare("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = ? AND `org_id` = ? AND `status` != 'Completed'");
-        $stmtInc->execute([$emp['id'], $meOrgId]);
-        $incCount = $stmtInc->fetchColumn() ?: 0;
-        $teamCounts[] = [
-            'name' => $emp['name'],
-            'avatar' => $emp['avatar'],
-            'count' => $incCount
-        ];
-    }
+    $dropdownEmployees = $employeesList;
+    $discussionsList = [];
+    $activitiesList = [];
+    $clientsList = $pdo->prepare("SELECT * FROM `clients` ORDER BY name ASC");
+    $clientsList->execute();
+    $clientsList = $clientsList->fetchAll(PDO::FETCH_ASSOC);
 
-    // 7. Dropdowns for modals (scoped to org)
-    $dropdownProjects = $pdo->prepare("SELECT id, name FROM `projects` WHERE org_id = ? ORDER BY name ASC");
-    $dropdownProjects->execute([$meOrgId]);
-    $dropdownProjects = $dropdownProjects->fetchAll(PDO::FETCH_ASSOC);
-
-    $dropdownEmployees = $pdo->prepare("SELECT id, name FROM `employees` WHERE role != 'Admin' AND org_id = ? ORDER BY name ASC");
-    $dropdownEmployees->execute([$meOrgId]);
-    $dropdownEmployees = $dropdownEmployees->fetchAll(PDO::FETCH_ASSOC);
-
-    $dropdownClients = $pdo->prepare("SELECT id, name, email, phone, created_at FROM `clients` WHERE org_id = ? ORDER BY name ASC");
-    $dropdownClients->execute([$meOrgId]);
-    $dropdownClients = $dropdownClients->fetchAll(PDO::FETCH_ASSOC);
-
-    // Fetch departments list
-    $departmentsList = [];
-    try {
-        $departmentsList = $pdo->prepare("
-            SELECT d.*, 
-                   (SELECT COUNT(*) FROM `employees` e WHERE e.role LIKE CONCAT('%', d.name, '%') AND e.org_id = ?) as employee_count
-            FROM `departments` d 
-            ORDER BY d.id ASC
-        ");
-        $departmentsList->execute([$meOrgId]);
-        $departmentsList = $departmentsList->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {}
-
-    // 8. Seeding Chart Data variables:
-    // Completed vs Incomplete count by month for line chart (from DB)
-    $months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    // Legacy Task Management Variables (Set to Empty to prevent frontend errors)
+    $projMemberDetails = [];
+    $recentProjects = [];
+    $projects = [];
+    $projectStatusCounts = ['Completed' => 0, 'Active' => 0, 'Pending' => 0, 'Rejected' => 0];
     $chartCompleted = array_fill(0, 12, 0);
     $chartIncomplete = array_fill(0, 12, 0);
-    $chartRows = $pdo->prepare("
-        SELECT MONTH(created_at) as m,
-               SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as c,
-               SUM(CASE WHEN status!='Completed' THEN 1 ELSE 0 END) as ic
-        FROM tasks
-        WHERE YEAR(created_at) = YEAR(CURDATE()) AND org_id = ?
-        GROUP BY MONTH(created_at)
-    ");
-    $chartRows->execute([$meOrgId]);
-    $chartRows = $chartRows->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($chartRows as $r) {
-        $idx = (int)$r['m'] - 1;
-        $chartCompleted[$idx] = (int)$r['c'];
-        $chartIncomplete[$idx] = (int)$r['ic'];
-    }
-    // If all zero (seeded data has old dates), do not fall back to static sample data
-    if (array_sum($chartCompleted) === 0) {
-        $chartCompleted = array_fill(0, 12, 0);
-        $chartIncomplete = array_fill(0, 12, 0);
-    }
-
-    // Priority counts for priority donut chart
-    $priorityCounts = [
-        'Low'    => 0,
-        'Medium' => 0,
-        'High'   => 0,
-    ];
-    try {
-        $stmtLow = $pdo->prepare("SELECT COUNT(*) FROM `tasks` WHERE `priority` = 'Low' AND org_id = ?");
-        $stmtLow->execute([$meOrgId]);
-        $priorityCounts['Low'] = $stmtLow->fetchColumn() ?: 0;
-
-        $stmtMed = $pdo->prepare("SELECT COUNT(*) FROM `tasks` WHERE `priority` = 'Medium' AND org_id = ?");
-        $stmtMed->execute([$meOrgId]);
-        $priorityCounts['Medium'] = $stmtMed->fetchColumn() ?: 0;
-
-        $stmtHigh = $pdo->prepare("SELECT COUNT(*) FROM `tasks` WHERE `priority` = 'High' AND org_id = ?");
-        $stmtHigh->execute([$meOrgId]);
-        $priorityCounts['High'] = $stmtHigh->fetchColumn() ?: 0;
-    } catch (PDOException $e) {}
-
-    // Do not load static mock priorities when database is empty
-    if ($priorityCounts['Low'] + $priorityCounts['Medium'] + $priorityCounts['High'] === 0) {
-        $priorityCounts = ['Low' => 0, 'Medium' => 0, 'High' => 0];
-    }
-
-    // Fetch Pin Notes
-    $pinNotes = $pdo->prepare("SELECT * FROM `pin_notes` WHERE org_id = ? ORDER BY id DESC");
-    $pinNotes->execute([$meOrgId]);
-    $pinNotes = $pinNotes->fetchAll(PDO::FETCH_ASSOC);
+    $priorityCounts = ['Low' => 0, 'Medium' => 0, 'High' => 0];
+    $pinNotes = [];
+    $teamCounts = [];
+    $dropdownProjects = [];
+    $departmentsList = [];
+    $totalTasks = 0;
+    $assignedToMe = 0;
+    $dueToday = 0;
+    $pastDue = 0;
+    $rsk_totalProjects = 0;
+    $rsk_pendingProjects = 0;
+    $rsk_approvedProjects = 0;
+    $rsk_rejectedProjects = 0;
+    $rsk_activeClients = 0;
+    $rsk_surveyWorks = 0;
+    $rsk_totalEmployees = 0;
+    $rsk_totalTasks = 0;
+    $pipelineCounts = [];
+    $serviceCounts = [];
 
 
     // Calculate actual directory storage
@@ -479,6 +328,10 @@ try {
     $landSurveysList->execute([$meOrgId]);
     $landSurveysList = $landSurveysList->fetchAll(PDO::FETCH_ASSOC);
 
+    $surveyManagementList = $pdo->prepare("SELECT * FROM `survey_management` WHERE org_id = ? AND is_archived = 0 ORDER BY id DESC");
+    $surveyManagementList->execute([$meOrgId]);
+    $surveyManagementList = $surveyManagementList->fetchAll(PDO::FETCH_ASSOC);
+
 } catch (PDOException $e) {
     die("Database access error: " . $e->getMessage());
 }
@@ -495,6 +348,43 @@ try {
     <script>
         window.VYALA_USER_ROLE = "<?= $jwtPayload['role'] ?>";
     </script>
+<style type="text/css" media="print">
+    /* Hide everything by default on print */
+    body * {
+        visibility: hidden;
+    }
+    
+    /* Show only the Survey Management table and its contents */
+    #view-surveymanagement, #view-surveymanagement * {
+        visibility: visible;
+    }
+    
+    /* Position the Survey Management view at the top of the print page */
+    #view-surveymanagement {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+    }
+
+    /* Hide buttons and filters inside the survey management view so they don't print */
+    #view-surveymanagement .rsk-module-header button,
+    #view-surveymanagement .rsk-action-bar,
+    #view-surveymanagement td button,
+    #view-surveymanagement .action-buttons {
+        display: none !important;
+    }
+    
+    /* Clean up the table appearance for print */
+    #view-surveymanagement table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    #view-surveymanagement th, #view-surveymanagement td {
+        border: 1px solid #ccc;
+        padding: 8px;
+    }
+</style>
 </head>
 <body>
 
@@ -2755,9 +2645,109 @@ try {
     </div>
 
 
+    <!-- TAB: SURVEY MANAGEMENT -->
+                <div id="view-surveymanagement" class="tab-view">
+                    <div class="view-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2 style="font-size: 24px; font-weight: 700; color: #0f172a; margin: 0;">Survey Management</h2>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary" id="btn-add-survey" style="background-color: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+                                <i data-lucide="plus"></i> Add Survey Record
+                            </button>
+                            <button class="btn btn-secondary" id="btn-export-survey" style="background-color: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+                                <i data-lucide="download"></i> Generate CSV
+                            </button>
+                            <button class="btn btn-secondary" id="btn-export-survey-pdf" style="background-color: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-left: 10px;" onclick="window.print()"><i data-lucide="file-text"></i> Generate PDF</button>
+                        </div>
+                    </div>
+
+                    <!-- Filter Bar -->
+                    <div style="background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <input type="text" id="filter-survey-number" placeholder="Search Survey Number..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; flex: 1; min-width: 150px;">
+                        <input type="text" id="filter-survey-village" placeholder="Village" style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; width: 130px;">
+                        <input type="text" id="filter-survey-taluk" placeholder="Taluk" style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; width: 130px;">
+                        <input type="text" id="filter-survey-district" placeholder="District" style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; width: 130px;">
+                        <select id="filter-survey-status" style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                            <option value="">All Statuses</option>
+                            <option value="Pending">Pending</option>
+                            <option value="Verified">Verified</option>
+                            <option value="Rejected">Rejected</option>
+                        </select>
+                        <button class="btn btn-secondary" id="btn-clear-survey-filters" style="padding: 8px 12px; border-radius: 6px; cursor: pointer;">Clear</button>
+                    </div>
+
+                    <div style="background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; color: #475569;">
+                                    <th style="padding: 12px 16px;">Survey / Sub Div</th>
+                                    <th style="padding: 12px 16px;">Owner Name</th>
+                                    <th style="padding: 12px 16px;">Location</th>
+                                    <th style="padding: 12px 16px;">Total Area</th>
+                                    <th style="padding: 12px 16px;">Status</th>
+                                    <th style="padding: 12px 16px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="survey-management-tbody">
+                                <?php if (!empty($surveyManagementList)): ?>
+                                    <?php foreach ($surveyManagementList as $s): ?>
+                                    <tr style="border-bottom: 1px solid #f1f5f9;">
+                                        <td style="padding: 12px 16px;">
+                                            <div style="font-weight: 600; color: #0f172a;"><?= htmlspecialchars($s['survey_number']) ?></div>
+                                            <div style="font-size: 12px; color: #64748b;">Sub: <?= htmlspecialchars($s['sub_division_number']) ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($s['owner_name']) ?></td>
+                                        <td style="padding: 12px 16px;">
+                                            <div><?= htmlspecialchars($s['village_name']) ?></div>
+                                            <div style="font-size: 12px; color: #64748b;"><?= htmlspecialchars($s['taluk']) ?>, <?= htmlspecialchars($s['district']) ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($s['total_area']) ?></td>
+                                        <td style="padding: 12px 16px;">
+                                            <?php 
+                                            $color = '#64748b'; $bg = '#f1f5f9';
+                                            if ($s['status'] === 'Verified') { $color = '#15803d'; $bg = '#dcfce7'; }
+                                            if ($s['status'] === 'Pending') { $color = '#b45309'; $bg = '#fef3c7'; }
+                                            if ($s['status'] === 'Rejected') { $color = '#b91c1c'; $bg = '#fee2e2'; }
+                                            ?>
+                                            <span style="display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; color: <?= $color ?>; background: <?= $bg ?>;">
+                                                <?= htmlspecialchars($s['status']) ?>
+                                            </span>
+                                        </td>
+                                        <td style="padding: 12px 16px; display: flex; gap: 8px;">
+                                            <button class="btn-action edit-survey" data-id="<?= $s['id'] ?>" data-json='<?= htmlspecialchars(json_encode($s), ENT_QUOTES, 'UTF-8') ?>' style="background:none; border:none; color:#3b82f6; cursor:pointer;" title="Edit">
+                                                <i data-lucide="edit-3" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <button class="btn-action verify-survey" data-id="<?= $s['id'] ?>" style="background:none; border:none; color:#10b981; cursor:pointer;" title="Verify">
+                                                <i data-lucide="check-circle" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <button class="btn-action history-survey" data-id="<?= $s['id'] ?>" style="background:none; border:none; color:#8b5cf6; cursor:pointer;" title="History">
+                                                <i data-lucide="clock" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <button class="btn-action archive-survey" data-id="<?= $s['id'] ?>" style="background:none; border:none; color:#ef4444; cursor:pointer;" title="Archive">
+                                                <i data-lucide="archive" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <?php if ($s['document_path']): ?>
+                                            <a href="<?= htmlspecialchars($s['document_path']) ?>" target="_blank" style="color:#06b6d4;" title="View Document">
+                                                <i data-lucide="file-text" style="width:16px;height:16px;"></i>
+                                            </a>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <tr>
+                                        <td colspan="6" style="padding: 30px; text-align: center; color: #94a3b8;">No active survey records found.</td>
+                                    </tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+
     </div>
 
-            <!-- Footer -->
+            
+                <!-- Footer -->
             <footer class="main-footer">
                 <span>&copy; <?= date('Y') ?> Vyala Software TaskPad. All rights reserved.</span>
                 <span>Software Version 2.0.0</span>
@@ -3301,6 +3291,7 @@ try {
         </div>
     </div>
 
+    
     <!-- Modal: Document Preview -->
     <div class="modal-overlay" id="modal-doc-preview">
         <div class="modal-container" style="max-width: 640px;">
@@ -3390,6 +3381,111 @@ try {
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="app.js"></script>
+
+    <!-- Modal: Survey Management -->
+    <div class="modal-overlay" id="modal-surveymanagement">
+        <div class="modal-container" style="max-width: 600px; max-height: 90vh; overflow-y: auto;">
+            <div class="modal-header">
+                <h3 id="modal-surveymanagement-title">Add Survey Record</h3>
+                <button class="modal-close"><i data-lucide="x"></i></button>
+            </div>
+            <form id="form-surveymanagement" enctype="multipart/form-data">
+                <input type="hidden" name="id" id="sm-id">
+                <input type="hidden" name="action" id="sm-action" value="create_survey_record">
+                <div class="modal-body" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="form-group">
+                        <label>Survey Number *</label>
+                        <input type="text" name="survey_number" id="sm-survey-number" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Sub Division Number</label>
+                        <input type="text" name="sub_division_number" id="sm-sub-division-number" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Owner Name</label>
+                        <input type="text" name="owner_name" id="sm-owner-name" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Village Name</label>
+                        <input type="text" name="village_name" id="sm-village-name" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Taluk</label>
+                        <input type="text" name="taluk" id="sm-taluk" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>District</label>
+                        <input type="text" name="district" id="sm-district" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Land Type</label>
+                        <input type="text" name="land_type" id="sm-land-type" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Total Area</label>
+                        <input type="number" step="0.01" name="total_area" id="sm-total-area" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Patta Number</label>
+                        <input type="text" name="patta_number" id="sm-patta-number" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>FMB Number</label>
+                        <input type="text" name="fmb_number" id="sm-fmb-number" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Latitude</label>
+                        <input type="text" name="latitude" id="sm-latitude" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Longitude</label>
+                        <input type="text" name="longitude" id="sm-longitude" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Survey Date</label>
+                        <input type="date" name="survey_date" id="sm-survey-date" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Status</label>
+                        <select name="status" id="sm-status" class="form-control">
+                            <option value="Pending">Pending</option>
+                            <option value="Verified">Verified</option>
+                            <option value="Rejected">Rejected</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label>Remarks</label>
+                        <textarea name="remarks" id="sm-remarks" class="form-control" rows="2"></textarea>
+                    </div>
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label>Upload Document (Optional)</label>
+                        <input type="file" name="document" id="sm-document" class="form-control">
+                    </div>
+                </div>
+                <div class="modal-footer" style="grid-column: span 2;">
+                    <button type="button" class="btn btn-secondary modal-close-btn">Cancel</button>
+                    <button type="submit" class="btn btn-primary" style="background-color: #2563eb;">Save Record</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal: Survey History -->
+    <div class="modal-overlay" id="modal-survey-history">
+        <div class="modal-container" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3>Survey Record History</h3>
+                <button class="modal-close"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body">
+                <div id="survey-history-content" style="max-height: 400px; overflow-y: auto;">
+                    <p style="text-align: center; color: #64748b;">Loading history...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+HTML;
 </body>
 </html>
 

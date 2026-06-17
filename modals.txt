@@ -1,0 +1,104 @@
+    <!-- Modal: Survey Management -->
+    <div class="modal-overlay" id="modal-surveymanagement">
+        <div class="modal-container" style="max-width: 600px; max-height: 90vh; overflow-y: auto;">
+            <div class="modal-header">
+                <h3 id="modal-surveymanagement-title">Add Survey Record</h3>
+                <button class="modal-close"><i data-lucide="x"></i></button>
+            </div>
+            <form id="form-surveymanagement" enctype="multipart/form-data">
+                <input type="hidden" name="id" id="sm-id">
+                <input type="hidden" name="action" id="sm-action" value="create_survey_record">
+                <div class="modal-body" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="form-group">
+                        <label>Survey Number *</label>
+                        <input type="text" name="survey_number" id="sm-survey-number" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Sub Division Number</label>
+                        <input type="text" name="sub_division_number" id="sm-sub-division-number" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Owner Name</label>
+                        <input type="text" name="owner_name" id="sm-owner-name" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Village Name</label>
+                        <input type="text" name="village_name" id="sm-village-name" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Taluk</label>
+                        <input type="text" name="taluk" id="sm-taluk" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>District</label>
+                        <input type="text" name="district" id="sm-district" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Land Type</label>
+                        <input type="text" name="land_type" id="sm-land-type" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Total Area</label>
+                        <input type="number" step="0.01" name="total_area" id="sm-total-area" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Patta Number</label>
+                        <input type="text" name="patta_number" id="sm-patta-number" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>FMB Number</label>
+                        <input type="text" name="fmb_number" id="sm-fmb-number" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Latitude</label>
+                        <input type="text" name="latitude" id="sm-latitude" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Longitude</label>
+                        <input type="text" name="longitude" id="sm-longitude" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Survey Date</label>
+                        <input type="date" name="survey_date" id="sm-survey-date" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Status</label>
+                        <select name="status" id="sm-status" class="form-control">
+                            <option value="Pending">Pending</option>
+                            <option value="Verified">Verified</option>
+                            <option value="Rejected">Rejected</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label>Remarks</label>
+                        <textarea name="remarks" id="sm-remarks" class="form-control" rows="2"></textarea>
+                    </div>
+                    <div class="form-group" style="grid-column: span 2;">
+                        <label>Upload Document (Optional)</label>
+                        <input type="file" name="document" id="sm-document" class="form-control">
+                    </div>
+                </div>
+                <div class="modal-footer" style="grid-column: span 2;">
+                    <button type="button" class="btn btn-secondary modal-close-btn">Cancel</button>
+                    <button type="submit" class="btn btn-primary" style="background-color: #2563eb;">Save Record</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal: Survey History -->
+    <div class="modal-overlay" id="modal-survey-history">
+        <div class="modal-container" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3>Survey Record History</h3>
+                <button class="modal-close"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body">
+                <div id="survey-history-content" style="max-height: 400px; overflow-y: auto;">
+                    <p style="text-align: center; color: #64748b;">Loading history...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+HTML;
