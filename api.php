@@ -1080,6 +1080,42 @@ try {
                 'message' => 'Layout saved successfully.'
             ];
         }
+
+        if ($action === 'get_pipeline_stage_details') {
+            $stage = trim($_GET['stage'] ?? '');
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
+
+            if (empty($stage)) {
+                throw new Exception("Stage name is required.");
+            }
+
+            $stmt = $pdo->prepare("
+                SELECT p.id, p.name, p.status, p.service_type, p.due_date, c.name as client_name
+                FROM `projects` p
+                LEFT JOIN `clients` c ON p.client_id = c.id
+                WHERE p.org_id = ? AND p.pipeline_stage = ?
+                ORDER BY p.id DESC
+            ");
+            $stmt->execute([$meOrgId, $stage]);
+            $stageProjects = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $totalFiles = 0;
+            foreach ($stageProjects as &$sp) {
+                $docStmt = $pdo->prepare("SELECT id, name, filepath, size FROM `documents` WHERE project_id = ? ORDER BY id ASC");
+                $docStmt->execute([$sp['id']]);
+                $sp['files'] = $docStmt->fetchAll(PDO::FETCH_ASSOC);
+                $totalFiles += count($sp['files']);
+            }
+            unset($sp);
+
+            $response = [
+                'success'    => true,
+                'stage'      => $stage,
+                'total'      => count($stageProjects),
+                'file_count' => $totalFiles,
+                'projects'   => $stageProjects
+            ];
+        }
     } catch (Throwable $e) {
         $response = [
             'success' => false,

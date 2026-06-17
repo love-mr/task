@@ -144,6 +144,34 @@ try {
     $rsk_totalEmployees = $pdo->query("SELECT COUNT(*) FROM `employees` WHERE role != 'Admin' AND org_id = $meOrgId")->fetchColumn() ?: 0;
     $rsk_totalTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
 
+    // --- PIPELINE & SERVICES DYNAMIC COUNTS ---
+    $pipelineRaw = $pdo->prepare("SELECT pipeline_stage, COUNT(*) as cnt FROM projects WHERE org_id = ? AND pipeline_stage IS NOT NULL AND pipeline_stage != '' GROUP BY pipeline_stage");
+    $pipelineRaw->execute([$meOrgId]);
+    $pipelineCounts = [];
+    foreach($pipelineRaw->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $pipelineCounts[$row['pipeline_stage']] = (int)$row['cnt'];
+    }
+
+    $servicesRaw = $pdo->prepare("SELECT service_type, COUNT(*) as cnt, SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END) as comp, SUM(CASE WHEN status!='Completed' AND status!='Rejected' THEN 1 ELSE 0 END) as pend FROM projects WHERE org_id = ? AND service_type IS NOT NULL AND service_type != '' GROUP BY service_type");
+    $servicesRaw->execute([$meOrgId]);
+    $serviceCounts = [];
+    foreach($servicesRaw->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $serviceCounts[$row['service_type']] = [
+            'total' => (int)$row['cnt'],
+            'comp'  => (int)$row['comp'],
+            'pend'  => (int)$row['pend']
+        ];
+    }
+
+    // Project status counts for donut chart
+    $statusCountsRaw = $pdo->prepare("SELECT status, COUNT(*) as cnt FROM projects WHERE org_id = ? GROUP BY status");
+    $statusCountsRaw->execute([$meOrgId]);
+    $projectStatusCounts = ['Completed'=>0,'Active'=>0,'Pending'=>0,'Rejected'=>0];
+    foreach($statusCountsRaw->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $projectStatusCounts[$row['status']] = (int)$row['cnt'];
+    }
+    // -------------------------------------------
+
     // 2. Fetch Projects Lists
     $projects = $pdo->prepare("
         SELECT p.*, c.name as client_name,
@@ -503,17 +531,25 @@ try {
                             <div class="rsk-stepper">
                                 <?php
                                 $pipelineStages = [
-                                    ['Lead Received', '#3b82f6', 12], ['Eligibility Check', '#06b6d4', 8], ['Fee Discussion', '#10b981', 10], 
-                                    ['Advance Received', '#22c55e', 15], ['Draft Preparation', '#84cc16', 14], ['Client Approval', '#eab308', 9], 
-                                    ['Document Collection', '#f59e0b', 11], ['Application Submitted', '#f97316', 13], ['NOC Process', '#ef4444', 16], 
-                                    ['Approval Received', '#ec4899', 22], ['Project Completed', '#a855f7', 18]
+                                    ['Lead Received', '#3b82f6'],
+                                    ['Eligibility Check', '#06b6d4'],
+                                    ['Fee Discussion', '#10b981'],
+                                    ['Advance Received', '#22c55e'],
+                                    ['Draft Preparation', '#84cc16'],
+                                    ['Client Approval', '#eab308'],
+                                    ['Document Collection', '#f59e0b'],
+                                    ['Application Submitted', '#f97316'],
+                                    ['NOC Process', '#ef4444'],
+                                    ['Approval Received', '#ec4899'],
+                                    ['Project Completed', '#a855f7']
                                 ];
                                 foreach($pipelineStages as $idx => $stage):
+                                    $count = $pipelineCounts[$stage[0]] ?? 0;
                                 ?>
-                                <div class="rsk-step">
-                                    <div class="rsk-step-circle" style="background: <?= $stage[1] ?>;"><?= $idx+1 ?></div>
-                                    <div class="rsk-step-title"><?= str_replace(' ', '<br>', $stage[0]) ?></div>
-                                    <div class="rsk-step-count"><?= $stage[2] ?></div>
+                                <div class="rsk-step" style="cursor:pointer;" onclick="openStageModal('<?= htmlspecialchars($stage[0], ENT_QUOTES) ?>')" title="Click to see projects in '<?= htmlspecialchars($stage[0], ENT_QUOTES) ?>'">
+                                    <div class="rsk-step-circle" style="background: <?= $stage[1] ?>; box-shadow: 0 0 0 2px <?= $stage[1] ?>33;"><?= $idx+1 ?></div>
+                                    <div class="rsk-step-title" style="color:#3b82f6; cursor:pointer;"><?= str_replace(' ', '<br>', htmlspecialchars($stage[0])) ?></div>
+                                    <div class="rsk-step-count" style="<?= $count > 0 ? 'background:#eff6ff; border-color:#bfdbfe; color:#2563eb;' : '' ?>"><?= $count ?></div>
                                 </div>
                                 <?php endforeach; ?>
                             </div>
@@ -530,25 +566,29 @@ try {
                                 </thead>
                                 <tbody>
                                     <?php
-                                    $serviceRows = [
-                                        ['Layout', 'layout', '#3b82f6', 25, 8, 17, 68],
-                                        ['Building', 'home', '#3b82f6', 15, 5, 10, 67],
-                                        ['Single Plot', 'square', '#eab308', 12, 2, 10, 83],
-                                        ['UAL', 'maximize', '#10b981', 6, 3, 3, 50],
-                                        ['Land Survey', 'map', '#10b981', 20, 4, 16, 80]
+                                    $serviceNames = [
+                                        ['Layout',      'layout',   '#3b82f6'],
+                                        ['Building',    'home',     '#f59e0b'],
+                                        ['Single Plot', 'square',   '#eab308'],
+                                        ['UAL',         'maximize', '#10b981'],
+                                        ['Land Survey', 'map',      '#a855f7']
                                     ];
                                     $totTotal=0; $totPend=0; $totComp=0;
-                                    foreach($serviceRows as $sr):
-                                        $totTotal += $sr[3]; $totPend += $sr[4]; $totComp += $sr[5];
+                                    foreach($serviceNames as $sn):
+                                        $c = $serviceCounts[$sn[0]] ?? ['total'=>0,'comp'=>0,'pend'=>0];
+                                        $totTotal += $c['total'];
+                                        $totPend  += $c['pend'];
+                                        $totComp  += $c['comp'];
+                                        $pct = $c['total'] > 0 ? round(($c['comp']/$c['total'])*100) : 0;
                                     ?>
                                     <tr>
-                                        <td style="color:#0f172a; font-weight:600;"><i data-lucide="<?= $sr[1] ?>" style="width:12px; height:12px; color:<?= $sr[2] ?>; display:inline-block; vertical-align:middle; margin-right:4px;"></i> <?= $sr[0] ?></td>
-                                        <td style="text-align:center;"><?= $sr[3] ?></td>
-                                        <td style="text-align:center;"><?= $sr[4] ?></td>
-                                        <td style="text-align:center;"><?= $sr[5] ?></td>
+                                        <td style="color:#0f172a; font-weight:600;"><i data-lucide="<?= $sn[1] ?>" style="width:12px; height:12px; color:<?= $sn[2] ?>; display:inline-block; vertical-align:middle; margin-right:4px;"></i> <?= $sn[0] ?></td>
+                                        <td style="text-align:center;"><?= $c['total'] ?></td>
+                                        <td style="text-align:center;"><?= $c['pend'] ?></td>
+                                        <td style="text-align:center;"><?= $c['comp'] ?></td>
                                         <td>
-                                            <div class="rsk-progress-bar"><div class="rsk-progress-fill" style="width:<?= $sr[6] ?>%;"></div></div>
-                                            <span style="font-size:10px; color:#64748b; margin-left:4px;"><?= $sr[6] ?>%</span>
+                                            <div class="rsk-progress-bar"><div class="rsk-progress-fill" style="width:<?= $pct ?>%;"></div></div>
+                                            <span style="font-size:10px; color:#64748b; margin-left:4px;"><?= $pct ?>%</span>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -557,7 +597,7 @@ try {
                                         <td style="text-align:center; font-weight:700; color:#0f172a;"><?= $totTotal ?></td>
                                         <td style="text-align:center; font-weight:700; color:#0f172a;"><?= $totPend ?></td>
                                         <td style="text-align:center; font-weight:700; color:#0f172a;"><?= $totComp ?></td>
-                                        <td style="font-weight:700; color:#0f172a;"><?= round(($totComp/$totTotal)*100) ?>%</td>
+                                        <td style="font-weight:700; color:#0f172a;"><?= $totTotal > 0 ? round(($totComp/$totTotal)*100) : 0 ?>%</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -576,31 +616,32 @@ try {
                                     <tr><th>Project ID</th><th>Client Name</th><th>Service Type</th><th>Location</th><th>Current Status</th><th>Target Date</th></tr>
                                 </thead>
                                 <tbody>
+                                    <?php
+                                    $recentProjectsLimit = array_slice($projects, 0, 5);
+                                    $statusPillMap = [
+                                        'Active'    => 'background:#eff6ff; color:#2563eb;',
+                                        'Pending'   => 'background:#fef3c7; color:#d97706;',
+                                        'Completed' => 'background:#dcfce7; color:#16a34a;',
+                                        'Rejected'  => 'background:#fee2e2; color:#dc2626;',
+                                        'On Hold'   => 'background:#f3e8ff; color:#9333ea;',
+                                    ];
+                                    if (empty($recentProjectsLimit)): ?>
+                                    <tr><td colspan="6" style="text-align:center; color:#94a3b8; padding:20px;">No projects yet. Add your first project!</td></tr>
+                                    <?php else: foreach($recentProjectsLimit as $i => $rp):
+                                        $rpStatus = $rp['status'] ?? 'Active';
+                                        $rpPillStyle = $statusPillMap[$rpStatus] ?? 'background:#f1f5f9; color:#475569;';
+                                        $rpPipeline = $rp['pipeline_stage'] ?? $rpStatus;
+                                        $rpDue = $rp['due_date'] ? date('d M Y', strtotime($rp['due_date'])) : '-';
+                                    ?>
                                     <tr>
-                                        <td>RSK-78</td><td>Suresh Babu</td><td>Layout</td><td>Anantapur</td>
-                                        <td><span class="rsk-pill" style="background:#ffedd5; color:#ea580c;">NOC Process</span></td>
-                                        <td><i data-lucide="calendar" style="width:10px; height:10px; display:inline-block;"></i> 28 May 2025</td>
+                                        <td style="font-weight:600;">#<?= str_pad($rp['id'], 3, '0', STR_PAD_LEFT) ?></td>
+                                        <td><?= htmlspecialchars($rp['client_name'] ?? 'N/A') ?></td>
+                                        <td><?= htmlspecialchars($rp['service_type'] ?? '-') ?></td>
+                                        <td><?= htmlspecialchars($rp['name']) ?></td>
+                                        <td><span class="rsk-pill" style="<?= $rpPillStyle ?>"><?= htmlspecialchars($rpPipeline) ?></span></td>
+                                        <td><i data-lucide="calendar" style="width:10px; height:10px; display:inline-block;"></i> <?= $rpDue ?></td>
                                     </tr>
-                                    <tr>
-                                        <td>RSK-77</td><td>Mahesh Reddy</td><td>Building</td><td>Dharmavaram</td>
-                                        <td><span class="rsk-pill" style="background:#fef3c7; color:#d97706;">Draft Preparation</span></td>
-                                        <td><i data-lucide="calendar" style="width:10px; height:10px; display:inline-block;"></i> 25 May 2025</td>
-                                    </tr>
-                                    <tr>
-                                        <td>RSK-76</td><td>Ravi Kumar</td><td>Single Plot</td><td>Tadipatri</td>
-                                        <td><span class="rsk-pill" style="background:#eff6ff; color:#2563eb;">Document Collection</span></td>
-                                        <td><i data-lucide="calendar" style="width:10px; height:10px; display:inline-block;"></i> 22 May 2025</td>
-                                    </tr>
-                                    <tr>
-                                        <td>RSK-75</td><td>Lakshmi Prasad</td><td>UAL</td><td>Penukonda</td>
-                                        <td><span class="rsk-pill" style="background:#f3e8ff; color:#9333ea;">Application Submitted</span></td>
-                                        <td><i data-lucide="calendar" style="width:10px; height:10px; display:inline-block;"></i> 30 May 2025</td>
-                                    </tr>
-                                    <tr>
-                                        <td>RSK-74</td><td>Kiran Kumar</td><td>Land Survey</td><td>Guntakal</td>
-                                        <td><span class="rsk-pill" style="background:#dcfce7; color:#16a34a;">Survey In Progress</span></td>
-                                        <td><i data-lucide="calendar" style="width:10px; height:10px; display:inline-block;"></i> 24 May 2025</td>
-                                    </tr>
+                                    <?php endforeach; endif; ?>
                                 </tbody>
                             </table>
                         </div>
@@ -611,20 +652,25 @@ try {
                                 <a href="#" class="rsk-panel-link">View All &rarr;</a>
                             </div>
                             <div style="display: flex; align-items: center; justify-content: center; height: 180px;">
+                                <?php
+                                $svcColors = ['Layout'=>'#3b82f6','Building'=>'#f59e0b','Single Plot'=>'#eab308','UAL'=>'#10b981','Land Survey'=>'#a855f7'];
+                                $svcTotal = array_sum(array_column($serviceCounts,'total')) ?: 1;
+                                ?>
                                 <div style="position: relative; width: 140px; height: 140px;">
                                     <canvas id="nocChart"></canvas>
                                     <div style="position: absolute; top:0; left:0; right:0; bottom:0; display:flex; flex-direction:column; align-items:center; justify-content:center;">
-                                        <span style="font-size: 20px; font-weight: 700; color: #0f172a;">78</span>
+                                        <span style="font-size: 20px; font-weight: 700; color: #0f172a;"><?= $rsk_totalProjects ?></span>
                                         <span style="font-size: 8px; color: #64748b;">Total Projects</span>
                                     </div>
                                 </div>
                                 <div style="margin-left: 20px; font-size: 10px;">
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px; width: 140px;"><span style="color:#475569;"><span style="color:#10b981;">■</span> Agriculture NOC</span> <span style="font-weight:600; color:#0f172a;">38 (49%)</span></div>
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px; width: 140px;"><span style="color:#475569;"><span style="color:#ec4899;">■</span> Revenue NOC</span> <span style="font-weight:600; color:#0f172a;">41 (53%)</span></div>
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px; width: 140px;"><span style="color:#475569;"><span style="color:#eab308;">■</span> WRD NOC</span> <span style="font-weight:600; color:#0f172a;">30 (38%)</span></div>
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px; width: 140px;"><span style="color:#475569;"><span style="color:#3b82f6;">■</span> Highway NOC</span> <span style="font-weight:600; color:#0f172a;">25 (32%)</span></div>
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 6px; width: 140px;"><span style="color:#475569;"><span style="color:#a855f7;">■</span> Forest NOC</span> <span style="font-weight:600; color:#0f172a;">12 (15%)</span></div>
-                                    <div style="display: flex; justify-content: space-between; width: 140px;"><span style="color:#475569;"><span style="color:#ef4444;">■</span> Railway NOC</span> <span style="font-weight:600; color:#0f172a;">9 (12%)</span></div>
+                                    <?php foreach(['Layout','Building','Single Plot','UAL','Land Survey'] as $sn): 
+                                        $sv = $serviceCounts[$sn] ?? ['total'=>0];
+                                        $svPct = round(($sv['total']/$svcTotal)*100);
+                                        $svColor = $svcColors[$sn];
+                                    ?>
+                                    <div style="display:flex; justify-content:space-between; margin-bottom:6px; width:160px;"><span style="color:#475569;"><span style="color:<?= $svColor ?>;">■</span> <?= $sn ?></span> <span style="font-weight:600; color:#0f172a;"><?= $sv['total'] ?> (<?= $svPct ?>%)</span></div>
+                                    <?php endforeach; ?>
                                 </div>
                             </div>
                             <div style="font-size: 9px; color: #94a3b8; text-align: center; margin-top: 10px;">* Multiple NOCs may be applicable for a project</div>
@@ -688,17 +734,24 @@ try {
                                 <a href="#" class="rsk-panel-link">View Report &rarr;</a>
                             </div>
                             <div style="display: flex; align-items: center; justify-content: center; height: 180px;">
+                                <?php
+                                $stTotal = array_sum($projectStatusCounts) ?: 1;
+                                $stCompleted = $projectStatusCounts['Completed'] ?? 0;
+                                $stActive    = $projectStatusCounts['Active']    ?? 0;
+                                $stPending   = $projectStatusCounts['Pending']   ?? 0;
+                                $stRejected  = $projectStatusCounts['Rejected']  ?? 0;
+                                ?>
                                 <div style="position: relative; width: 140px; height: 140px;">
                                     <canvas id="statusChart"></canvas>
                                     <div style="position: absolute; top:0; left:0; right:0; bottom:0; display:flex; flex-direction:column; align-items:center; justify-content:center;">
-                                        <span style="font-size: 20px; font-weight: 700; color: #0f172a;">78</span>
+                                        <span style="font-size: 20px; font-weight: 700; color: #0f172a;"><?= $rsk_totalProjects ?></span>
                                     </div>
                                 </div>
                                 <div style="margin-left: 20px; font-size: 11px;">
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; width: 120px;"><span style="color:#475569;"><span style="color:#10b981;">■</span> Completed</span> <span style="font-weight:600; color:#0f172a;">56 (72%)</span></div>
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; width: 120px;"><span style="color:#475569;"><span style="color:#3b82f6;">■</span> In Progress</span> <span style="font-weight:600; color:#0f172a;">22 (28%)</span></div>
-                                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; width: 120px;"><span style="color:#475569;"><span style="color:#f59e0b;">■</span> On Hold</span> <span style="font-weight:600; color:#0f172a;">4 (5%)</span></div>
-                                    <div style="display: flex; justify-content: space-between; width: 120px;"><span style="color:#475569;"><span style="color:#ef4444;">■</span> Rejected</span> <span style="font-weight:600; color:#0f172a;">6 (8%)</span></div>
+                                    <div style="display:flex; justify-content:space-between; margin-bottom:8px; width:130px;"><span style="color:#475569;"><span style="color:#10b981;">■</span> Completed</span> <span style="font-weight:600; color:#0f172a;"><?= $stCompleted ?> (<?= round($stCompleted/$stTotal*100) ?>%)</span></div>
+                                    <div style="display:flex; justify-content:space-between; margin-bottom:8px; width:130px;"><span style="color:#475569;"><span style="color:#3b82f6;">■</span> Active</span> <span style="font-weight:600; color:#0f172a;"><?= $stActive ?> (<?= round($stActive/$stTotal*100) ?>%)</span></div>
+                                    <div style="display:flex; justify-content:space-between; margin-bottom:8px; width:130px;"><span style="color:#475569;"><span style="color:#f59e0b;">■</span> Pending</span> <span style="font-weight:600; color:#0f172a;"><?= $stPending ?> (<?= round($stPending/$stTotal*100) ?>%)</span></div>
+                                    <div style="display:flex; justify-content:space-between; width:130px;"><span style="color:#475569;"><span style="color:#ef4444;">■</span> Rejected</span> <span style="font-weight:600; color:#0f172a;"><?= $stRejected ?> (<?= round($stRejected/$stTotal*100) ?>%)</span></div>
                                 </div>
                             </div>
                         </div>
@@ -732,16 +785,16 @@ try {
 
                     <script>
                     document.addEventListener('DOMContentLoaded', function() {
-                        // Wait slightly for Chart.js to load if via CDN
                         setTimeout(() => {
-                            // NOC Chart
+                            // Service-wise donut (replaces NOC)
+                            var svcData = <?= json_encode(array_map(fn($sn) => $serviceCounts[$sn]['total'] ?? 0, ['Layout','Building','Single Plot','UAL','Land Survey'])) ?>;
                             new Chart(document.getElementById('nocChart').getContext('2d'), {
                                 type: 'doughnut',
                                 data: {
-                                    labels: ['Agriculture', 'Revenue', 'WRD', 'Highway', 'Forest', 'Railway'],
+                                    labels: ['Layout','Building','Single Plot','UAL','Land Survey'],
                                     datasets: [{
-                                        data: [38, 41, 30, 25, 12, 9],
-                                        backgroundColor: ['#10b981', '#ec4899', '#eab308', '#3b82f6', '#a855f7', '#ef4444'],
+                                        data: svcData,
+                                        backgroundColor: ['#3b82f6','#f59e0b','#eab308','#10b981','#a855f7'],
                                         borderWidth: 0,
                                         cutout: '75%'
                                     }]
@@ -749,14 +802,14 @@ try {
                                 options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: true } } }
                             });
 
-                            // Status Chart
+                            // Status Chart – fully dynamic
                             new Chart(document.getElementById('statusChart').getContext('2d'), {
                                 type: 'doughnut',
                                 data: {
-                                    labels: ['Completed', 'In Progress', 'On Hold', 'Rejected'],
+                                    labels: ['Completed','Active','Pending','Rejected'],
                                     datasets: [{
-                                        data: [56, 22, 4, 6],
-                                        backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444'],
+                                        data: [<?= $stCompleted ?>, <?= $stActive ?>, <?= $stPending ?>, <?= $stRejected ?>],
+                                        backgroundColor: ['#10b981','#3b82f6','#f59e0b','#ef4444'],
                                         borderWidth: 0,
                                         cutout: '75%'
                                     }]
@@ -764,16 +817,24 @@ try {
                                 options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: true } } }
                             });
 
-                            // Services Chart (Horizontal Bar)
+                            // Services bar chart – dynamic from DB
+                            var svcLabels = ['Layout','Building','Land Survey','Single Plot','UAL'];
+                            var svcBarData = [
+                                <?= ($serviceCounts['Layout']['total']      ?? 0) ?>,
+                                <?= ($serviceCounts['Building']['total']    ?? 0) ?>,
+                                <?= ($serviceCounts['Land Survey']['total'] ?? 0) ?>,
+                                <?= ($serviceCounts['Single Plot']['total'] ?? 0) ?>,
+                                <?= ($serviceCounts['UAL']['total']         ?? 0) ?>
+                            ];
                             new Chart(document.getElementById('servicesChart').getContext('2d'), {
                                 type: 'bar',
                                 data: {
-                                    labels: ['Layout', 'Building', 'Land Survey', 'Single Plot', 'UAL'],
+                                    labels: svcLabels,
                                     datasets: [{
-                                        data: [85, 65, 45, 30, 15],
-                                        backgroundColor: ['#10b981', '#3b82f6', '#eab308', '#a855f7', '#ec4899'],
+                                        data: svcBarData,
+                                        backgroundColor: ['#3b82f6','#f59e0b','#a855f7','#eab308','#10b981'],
                                         borderRadius: 4,
-                                        barThickness: 8
+                                        barThickness: 10
                                     }]
                                 },
                                 options: {
@@ -781,16 +842,99 @@ try {
                                     responsive: true,
                                     maintainAspectRatio: false,
                                     scales: {
-                                        x: { display: false, grid: { display: false } },
+                                        x: { display: true, grid: { display: false }, ticks: { stepSize: 1, font:{size:9} } },
                                         y: { grid: { display: false }, border: { display: false }, ticks: { font: { size: 10, family: "'Outfit', sans-serif" }, color: '#475569' } }
                                     },
                                     plugins: { legend: { display: false } }
                                 }
                             });
-                            
-                            // Initialize icons in new block
+
                             if(typeof lucide !== 'undefined') lucide.createIcons();
                         }, 500);
+                    });
+                    </script>
+
+                    <!-- ===== PIPELINE STAGE MODAL ===== -->
+                    <div id="stageModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+                        <div style="background:#fff; border-radius:12px; width:90%; max-width:700px; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                            <div style="display:flex; justify-content:space-between; align-items:center; padding:20px 24px; border-bottom:1px solid #e2e8f0;">
+                                <h3 id="stageModalTitle" style="margin:0; font-size:16px; font-weight:700; color:#0f172a;">Stage Projects</h3>
+                                <button onclick="closeStageModal()" style="border:none; background:none; cursor:pointer; font-size:20px; color:#64748b; line-height:1;">&times;</button>
+                            </div>
+                            <div style="padding:20px 24px; overflow-y:auto; flex:1;">
+                                <div id="stageModalLoader" style="text-align:center; padding:40px; color:#64748b;">
+                                    <div style="font-size:24px; margin-bottom:10px;">⏳</div>Loading projects...
+                                </div>
+                                <div id="stageModalContent" style="display:none;">
+                                    <div id="stageModalSummary" style="display:flex; gap:16px; margin-bottom:20px; flex-wrap:wrap;"></div>
+                                    <div id="stageProjectsList" style="display:flex; flex-direction:column; gap:14px;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <script>
+                    function openStageModal(stageName) {
+                        var modal = document.getElementById('stageModal');
+                        modal.style.display = 'flex';
+                        document.getElementById('stageModalTitle').innerText = '📋 Stage: ' + stageName;
+                        document.getElementById('stageModalLoader').style.display = 'block';
+                        document.getElementById('stageModalContent').style.display = 'none';
+
+                        fetch('api.php?action=get_pipeline_stage_details&stage=' + encodeURIComponent(stageName))
+                            .then(function(r){ return r.json(); })
+                            .then(function(data) {
+                                document.getElementById('stageModalLoader').style.display = 'none';
+                                document.getElementById('stageModalContent').style.display = 'block';
+
+                                var summary = document.getElementById('stageModalSummary');
+                                summary.innerHTML = '<div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:12px 20px; text-align:center;"><div style="font-size:24px; font-weight:700; color:#2563eb;">' + (data.total || 0) + '</div><div style="font-size:11px; color:#64748b;">Total Projects</div></div>' +
+                                    '<div style="background:#dcfce7; border:1px solid #bbf7d0; border-radius:8px; padding:12px 20px; text-align:center;"><div style="font-size:24px; font-weight:700; color:#16a34a;">' + (data.file_count || 0) + '</div><div style="font-size:11px; color:#64748b;">Total Files</div></div>';
+
+                                var list = document.getElementById('stageProjectsList');
+                                list.innerHTML = '';
+                                if (!data.projects || data.projects.length === 0) {
+                                    list.innerHTML = '<div style="text-align:center; padding:40px; color:#94a3b8; border:2px dashed #e2e8f0; border-radius:8px;">No projects in this stage yet.</div>';
+                                    return;
+                                }
+                                data.projects.forEach(function(p) {
+                                    var filesHtml = '';
+                                    if (p.files && p.files.length > 0) {
+                                        filesHtml = '<div style="margin-top:12px; background:#f8fafc; border-radius:6px; padding:10px 14px; border:1px solid #e2e8f0;">' +
+                                            '<div style="font-size:10px; font-weight:700; color:#475569; text-transform:uppercase; margin-bottom:8px; letter-spacing:0.5px;">📎 Files (' + p.files.length + ')</div>' +
+                                            '<div style="display:flex; flex-direction:column; gap:6px;">';
+                                        p.files.forEach(function(f) {
+                                            filesHtml += '<div style="display:flex; align-items:center; gap:8px; font-size:12px;">'
+                                                + '<span style="color:#10b981;">📄</span>'
+                                                + '<a href="uploads/' + f.filepath + '" target="_blank" style="color:#2563eb; text-decoration:none; font-weight:500;">' + f.name + '</a>'
+                                                + '<span style="color:#94a3b8; font-size:10px;">' + (f.size || '') + '</span>'
+                                                + '</div>';
+                                        });
+                                        filesHtml += '</div></div>';
+                                    } else {
+                                        filesHtml = '<div style="margin-top:8px; font-size:11px; color:#94a3b8; font-style:italic;">No files uploaded yet.</div>';
+                                    }
+                                    list.innerHTML += '<div style="border:1px solid #e2e8f0; border-radius:10px; padding:16px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.05);">'
+                                        + '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">'
+                                            + '<div>'
+                                                + '<div style="font-size:14px; font-weight:700; color:#0f172a;">' + p.name + '</div>'
+                                                + '<div style="font-size:11px; color:#64748b; margin-top:2px;">Client: ' + (p.client_name || 'N/A') + ' &nbsp;|&nbsp; Service: ' + (p.service_type || '-') + '</div>'
+                                            + '</div>'
+                                            + '<span style="background:#eff6ff; color:#2563eb; padding:3px 8px; border-radius:99px; font-size:10px; font-weight:600; white-space:nowrap;">' + p.status + '</span>'
+                                        + '</div>'
+                                        + filesHtml
+                                        + '</div>';
+                                });
+                            })
+                            .catch(function() {
+                                document.getElementById('stageModalLoader').innerHTML = '<span style="color:#ef4444;">Error loading data. Please try again.</span>';
+                            });
+                    }
+                    function closeStageModal() {
+                        document.getElementById('stageModal').style.display = 'none';
+                    }
+                    // Close on outside click
+                    document.getElementById('stageModal').addEventListener('click', function(e){
+                        if(e.target === this) closeStageModal();
                     });
                     </script>
                 </div>
