@@ -1045,6 +1045,7 @@ try {
                 $stmt->execute([$targetDate, $projectId]);
             }
 
+            $currentDate = $startDate;
             $prevTaskId = null;
             foreach ($sequenceData as $t) {
                 $assigneeId = (int)($jwtPayload['id']);
@@ -1052,10 +1053,15 @@ try {
                     $assigneeId = (int)$t['assignee'];
                 }
 
+                $days = (int)($t['days'] ?? 1);
+                if ($days < 1) $days = 1;
+
+                $currentDate = date('Y-m-d', strtotime("$currentDate + $days days"));
+
                 $stmt = $pdo->prepare("INSERT INTO `tasks` 
                     (`title`, `description`, `project_id`, `assigned_to`, `priority`, `status`, `org_id`, 
-                     `estimated_duration`, `sequence_order`, `depends_on`) 
-                     VALUES (?, ?, ?, ?, ?, 'Todo', ?, ?, ?, ?)");
+                     `estimated_duration`, `sequence_order`, `depends_on`, `due_date`) 
+                     VALUES (?, ?, ?, ?, ?, 'Todo', ?, ?, ?, ?, ?)");
                 $stmt->execute([
                     $t['title'], 
                     'Created via Layout Module',
@@ -1063,9 +1069,10 @@ try {
                     $assigneeId,
                     $t['priority'],
                     $meOrgId,
-                    (int)$t['days'],
+                    $days,
                     (int)$t['order'],
-                    $prevTaskId
+                    $prevTaskId,
+                    $currentDate
                 ]);
                 $prevTaskId = $pdo->lastInsertId();
             }
@@ -1341,11 +1348,58 @@ try {
                 'projects'   => $stageProjects
             ];
         }
+
+        if ($action === 'update_task_details') {
+            $taskId = (int)($_POST['task_id'] ?? 0);
+            $newDueDate = trim($_POST['due_date'] ?? '');
+            $newEstDays = (int)($_POST['estimated_duration'] ?? 0);
+
+            if (!$taskId) {
+                throw new Exception("Task ID is required.");
+            }
+
+            // Check task existence
+            $stmtTask = $pdo->prepare("SELECT id FROM tasks WHERE id = ?");
+            $stmtTask->execute([$taskId]);
+            if (!$stmtTask->fetch()) {
+                throw new Exception("Task not found.");
+            }
+
+            if ($newEstDays > 0) {
+                $stmtUpdateEst = $pdo->prepare("UPDATE tasks SET estimated_duration = ? WHERE id = ?");
+                $stmtUpdateEst->execute([$newEstDays, $taskId]);
+            }
+
+            if (!empty($newDueDate)) {
+                propagateDueDateChange($pdo, $taskId, $newDueDate);
+            }
+
+            $response = [
+                'success' => true,
+                'message' => 'Task updated successfully.'
+            ];
+        }
     } catch (Throwable $e) {
         $response = [
             'success' => false,
             'message' => $e->getMessage()
         ];
     }
+
+function propagateDueDateChange($pdo, $taskId, $newDueDate) {
+    $stmt = $pdo->prepare("UPDATE tasks SET due_date = ? WHERE id = ?");
+    $stmt->execute([$newDueDate, $taskId]);
+
+    $stmtChildren = $pdo->prepare("SELECT id, estimated_duration FROM tasks WHERE depends_on = ?");
+    $stmtChildren->execute([$taskId]);
+    $children = $stmtChildren->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($children as $child) {
+        $days = (int)$child['estimated_duration'];
+        if ($days <= 0) $days = 1;
+        $childNewDueDate = date('Y-m-d', strtotime("$newDueDate + $days days"));
+        propagateDueDateChange($pdo, $child['id'], $childNewDueDate);
+    }
+}
 
 echo json_encode($response);
