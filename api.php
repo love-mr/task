@@ -516,12 +516,13 @@ try {
         } else if ($action === 'create_discussion') {
             $title = trim($_POST['title'] ?? '');
             $type = trim($_POST['type'] ?? 'General');
+            $encryptedKeySelf = trim($_POST['encrypted_key_self'] ?? '');
 
             if (empty($title)) {
                 throw new Exception("Discussion Title is required.");
             }
 
-            $stmt = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`, `org_id`) VALUES (?, ?, ?, ?)");
+            $stmt = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`, `org_id`, `is_direct`) VALUES (?, ?, ?, ?, 0)");
             $stmt->execute([$title, $type, date('d M Y'), $jwtPayload['org_id']]);
             $discId = $pdo->lastInsertId();
             $meId = $jwtPayload['id'];
@@ -530,7 +531,94 @@ try {
             $stmtMem = $pdo->prepare("INSERT INTO `discussion_members` (`discussion_id`, `employee_id`) VALUES (?, ?)");
             $stmtMem->execute([$discId, $meId]);
 
+            if (!empty($encryptedKeySelf)) {
+                $stmtKey = $pdo->prepare("INSERT INTO `discussion_keys` (`discussion_id`, `employee_id`, `encrypted_key`) VALUES (?, ?, ?)");
+                $stmtKey->execute([$discId, $meId, $encryptedKeySelf]);
+            }
+
             $response = ['success' => true, 'message' => 'Discussion channel created successfully', 'discussion_id' => $discId];
+        } else if ($action === 'create_direct_message') {
+            $targetEmpId = (int)($_POST['target_employee_id'] ?? 0);
+            $encKeySelf = trim($_POST['encrypted_key_self'] ?? '');
+            $encKeyTarget = trim($_POST['encrypted_key_target'] ?? '');
+            $meId = $jwtPayload['id'];
+
+            if (!$targetEmpId || empty($encKeySelf) || empty($encKeyTarget)) {
+                throw new Exception("Target employee and encryption keys are required.");
+            }
+
+            // Check if DM already exists
+            $checkStmt = $pdo->prepare("
+                SELECT d.id FROM discussions d
+                JOIN discussion_members dm1 ON d.id = dm1.discussion_id AND dm1.employee_id = ?
+                JOIN discussion_members dm2 ON d.id = dm2.discussion_id AND dm2.employee_id = ?
+                WHERE d.is_direct = 1
+                LIMIT 1
+            ");
+            $checkStmt->execute([$meId, $targetEmpId]);
+            $existingId = $checkStmt->fetchColumn();
+
+            if ($existingId) {
+                $response = ['success' => true, 'message' => 'Direct message already exists', 'discussion_id' => $existingId];
+            } else {
+                // Get target employee name
+                $tgtName = $pdo->query("SELECT name FROM employees WHERE id = $targetEmpId")->fetchColumn();
+                $myName = $jwtPayload['name'];
+                
+                // Create DM discussion. We use a placeholder title, the frontend will show the other person's name
+                $stmt = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`, `org_id`, `is_direct`) VALUES (?, 'Direct', ?, ?, 1)");
+                $stmt->execute(["DM: $myName & $tgtName", date('d M Y'), $jwtPayload['org_id']]);
+                $discId = $pdo->lastInsertId();
+
+                // Add members
+                $stmtMem = $pdo->prepare("INSERT INTO `discussion_members` (`discussion_id`, `employee_id`) VALUES (?, ?)");
+                $stmtMem->execute([$discId, $meId]);
+                $stmtMem->execute([$discId, $targetEmpId]);
+
+                // Add keys
+                $stmtKey = $pdo->prepare("INSERT INTO `discussion_keys` (`discussion_id`, `employee_id`, `encrypted_key`) VALUES (?, ?, ?)");
+                $stmtKey->execute([$discId, $meId, $encKeySelf]);
+                $stmtKey->execute([$discId, $targetEmpId, $encKeyTarget]);
+
+                $response = ['success' => true, 'message' => 'Direct message created successfully', 'discussion_id' => $discId];
+            }
+        } else if ($action === 'save_public_key') {
+            $pubKey = trim($_POST['public_key'] ?? '');
+            $meId = $jwtPayload['id'];
+            if (!empty($pubKey)) {
+                $pdo->prepare("UPDATE `employees` SET `public_key` = ? WHERE id = ?")->execute([$pubKey, $meId]);
+            }
+            $response = ['success' => true];
+        } else if ($action === 'get_employee_public_key') {
+            $empId = (int)($_REQUEST['employee_id'] ?? 0);
+            $pubKey = $pdo->query("SELECT public_key FROM employees WHERE id = $empId")->fetchColumn();
+            $response = ['success' => true, 'public_key' => $pubKey];
+        } else if ($action === 'store_discussion_key') {
+            $discId = (int)($_POST['discussion_id'] ?? 0);
+            $targetEmpId = (int)($_POST['employee_id'] ?? 0);
+            $encKey = trim($_POST['encrypted_key'] ?? '');
+            if ($discId && $targetEmpId && $encKey) {
+                $pdo->prepare("INSERT IGNORE INTO `discussion_keys` (`discussion_id`, `employee_id`, `encrypted_key`) VALUES (?, ?, ?)")->execute([$discId, $targetEmpId, $encKey]);
+            }
+            $response = ['success' => true];
+        } else if ($action === 'get_discussion_members') {
+            $discId = (int)($_REQUEST['discussion_id'] ?? 0);
+            if (!$discId) throw new Exception("Discussion ID required.");
+            $stmt = $pdo->prepare("
+                SELECT e.id, e.name, e.avatar, e.role
+                FROM `discussion_members` dm
+                JOIN `employees` e ON dm.employee_id = e.id
+                WHERE dm.discussion_id = ?
+            ");
+            $stmt->execute([$discId]);
+            $members = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $response = ['success' => true, 'members' => $members];
+        } else if ($action === 'get_discussion_key') {
+            $discId = (int)($_REQUEST['discussion_id'] ?? 0);
+            $meId = $jwtPayload['id'];
+            $encKey = $pdo->prepare("SELECT encrypted_key FROM discussion_keys WHERE discussion_id = ? AND employee_id = ?");
+            $encKey->execute([$discId, $meId]);
+            $response = ['success' => true, 'encrypted_key' => $encKey->fetchColumn()];
         } else if ($action === 'send_message') {
             $discId = (int) ($_POST['discussion_id'] ?? 0);
             $message = trim($_POST['message'] ?? '');
@@ -594,6 +682,68 @@ try {
             }
 
             $response = ['success' => true, 'messages' => $messages];
+        } else if ($action === 'start_call') {
+            $discId = (int) ($_POST['discussion_id'] ?? 0);
+            $type = trim($_POST['type'] ?? 'video');
+            $meId = $jwtPayload['id'];
+            
+            if (!$discId) throw new Exception("Discussion ID required.");
+
+            // End any existing calls for this discussion
+            $pdo->prepare("UPDATE calls SET status = 'ended' WHERE discussion_id = ? AND status != 'ended'")->execute([$discId]);
+
+            // Start new call
+            $stmt = $pdo->prepare("INSERT INTO calls (discussion_id, caller_id, type, status) VALUES (?, ?, ?, 'ringing')");
+            $stmt->execute([$discId, $meId, $type]);
+            $callId = $pdo->lastInsertId();
+
+            $response = ['success' => true, 'call_id' => $callId];
+        } else if ($action === 'check_calls') {
+            $meId = $jwtPayload['id'];
+            // Check for ringing calls in discussions the user is a part of
+            $stmt = $pdo->prepare("
+                SELECT c.id as call_id, c.discussion_id, c.caller_id, c.type, d.title as discussion_title, e.name as caller_name, e.avatar as caller_avatar, d.is_direct
+                FROM calls c
+                JOIN discussion_members dm ON c.discussion_id = dm.discussion_id
+                JOIN discussions d ON c.discussion_id = d.id
+                JOIN employees e ON c.caller_id = e.id
+                WHERE dm.employee_id = ? AND c.caller_id != ? AND (c.status = 'ringing' OR c.status = 'active')
+                ORDER BY c.id DESC LIMIT 1
+            ");
+            $stmt->execute([$meId, $meId]);
+            $call = $stmt->fetch(PDO::FETCH_ASSOC);
+            $response = ['success' => true, 'call' => $call];
+        } else if ($action === 'delete_discussion') {
+            $discId = (int)($_POST['discussion_id'] ?? 0);
+            $meId = $jwtPayload['id'];
+            
+            if (!$discId) {
+                throw new Exception("Discussion ID is required.");
+            }
+            
+            // Allow Admin or the Creator (check logic here, for now any member can delete)
+            $checkMem = $pdo->prepare("SELECT COUNT(*) FROM `discussion_members` WHERE discussion_id = ? AND employee_id = ?");
+            $checkMem->execute([$discId, $meId]);
+            if ($checkMem->fetchColumn() == 0 && $jwtPayload['role'] !== 'Admin') {
+                throw new Exception("You do not have permission to delete this discussion.");
+            }
+            
+            // Delete associated data
+            $pdo->prepare("DELETE FROM `discussion_messages` WHERE discussion_id = ?")->execute([$discId]);
+            $pdo->prepare("DELETE FROM `discussion_members` WHERE discussion_id = ?")->execute([$discId]);
+            $pdo->prepare("DELETE FROM `discussion_keys` WHERE discussion_id = ?")->execute([$discId]);
+            $pdo->prepare("DELETE FROM `calls` WHERE discussion_id = ?")->execute([$discId]);
+            $pdo->prepare("DELETE FROM `discussions` WHERE id = ?")->execute([$discId]);
+            
+            $response = ['success' => true];
+        } else if ($action === 'answer_call') {
+            $callId = (int)($_POST['call_id'] ?? 0);
+            $pdo->prepare("UPDATE calls SET status = 'active' WHERE id = ?")->execute([$callId]);
+            $response = ['success' => true];
+        } else if ($action === 'end_call') {
+            $discId = (int)($_POST['discussion_id'] ?? 0);
+            $pdo->prepare("UPDATE calls SET status = 'ended' WHERE discussion_id = ? AND status != 'ended'")->execute([$discId]);
+            $response = ['success' => true];
         } else if ($action === 'upload_document') {
             $meId = $jwtPayload['id'];
             $projectId = isset($_POST['project_id']) && $_POST['project_id'] !== '' ? (int) $_POST['project_id'] : null;
@@ -976,6 +1126,9 @@ try {
                 'non_members' => $nonMembers
             ];
         } else if ($action === 'add_discussion_member') {
+            if ($jwtPayload['role'] !== 'Admin') {
+                throw new Exception("Only Admin can add members to the group discussion.");
+            }
             $discId = (int)($_POST['discussion_id'] ?? 0);
             $empId = (int)($_POST['employee_id'] ?? 0);
             if (!$discId || !$empId) {
@@ -985,6 +1138,9 @@ try {
             $stmt->execute([$discId, $empId]);
             $response = ['success' => true, 'message' => 'Member added successfully'];
         } else if ($action === 'remove_discussion_member') {
+            if ($jwtPayload['role'] !== 'Admin') {
+                throw new Exception("Only Admin can remove members from the group discussion.");
+            }
             $discId = (int)($_POST['discussion_id'] ?? 0);
             $empId = (int)($_POST['employee_id'] ?? 0);
             if (!$discId || !$empId) {
@@ -1304,12 +1460,16 @@ try {
                 $stmt->execute([$targetDate, $projectId]);
             }
 
+<<<<<<< HEAD
             // Fetch assignee names for response
             $empNameMap = [];
             $empRows = $pdo->query("SELECT id, name FROM employees")->fetchAll(PDO::FETCH_ASSOC);
             foreach ($empRows as $er) { $empNameMap[$er['id']] = $er['name']; }
 
             $taskStartDate = $startDate;
+=======
+            $currentDate = $startDate;
+>>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
             $prevTaskId = null;
             $createdTasks = [];
 
@@ -1322,7 +1482,11 @@ try {
                 $days = (int)($t['days'] ?? 1);
                 if ($days < 1) $days = 1;
 
+<<<<<<< HEAD
                 $taskEndDate = date('Y-m-d', strtotime("$taskStartDate + $days days"));
+=======
+                $currentDate = date('Y-m-d', strtotime("$currentDate + $days days"));
+>>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
 
                 $stmt = $pdo->prepare("INSERT INTO `tasks` 
                     (`title`, `description`, `project_id`, `assigned_to`, `priority`, `status`, `org_id`, 
@@ -1338,7 +1502,11 @@ try {
                     $days,
                     (int)$t['order'],
                     $prevTaskId,
+<<<<<<< HEAD
                     $taskEndDate
+=======
+                    $currentDate
+>>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
                 ]);
                 $prevTaskId = $pdo->lastInsertId();
 
@@ -1774,8 +1942,224 @@ try {
                 'projects'   => $stageProjects
             ];
         }
+<<<<<<< HEAD
 
         if ($action === 'update_task_details') {
+=======
+    
+        // ==========================================
+        // SURVEY MANAGEMENT MODULE
+        $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
+        $meId = (int)($jwtPayload['user_id'] ?? 1);
+
+
+        // ==========================================
+
+        if ($action === 'create_survey_record') {
+            $survey_number = trim($_POST['survey_number'] ?? '');
+            if (!$survey_number) throw new Exception("Survey Number is required.");
+
+            $sub_division_number = trim($_POST['sub_division_number'] ?? '');
+            $owner_name = trim($_POST['owner_name'] ?? '');
+            $village_name = trim($_POST['village_name'] ?? '');
+            $taluk = trim($_POST['taluk'] ?? '');
+            $district = trim($_POST['district'] ?? '');
+            $land_type = trim($_POST['land_type'] ?? '');
+            $total_area = floatval($_POST['total_area'] ?? 0);
+            $patta_number = trim($_POST['patta_number'] ?? '');
+            $fmb_number = trim($_POST['fmb_number'] ?? '');
+            $latitude = trim($_POST['latitude'] ?? '');
+            $longitude = trim($_POST['longitude'] ?? '');
+            $survey_date = !empty($_POST['survey_date']) ? $_POST['survey_date'] : null;
+            $status = trim($_POST['status'] ?? 'Pending');
+            $remarks = trim($_POST['remarks'] ?? '');
+            
+            $documentPath = null;
+            if (isset($_FILES['document']) && $_FILES['document']['error'] === UPLOAD_ERR_OK) {
+                $uploadDir = 'uploads/';
+                if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
+                $documentPath = $uploadDir . time() . '_' . basename($_FILES['document']['name']);
+                move_uploaded_file($_FILES['document']['tmp_name'], $documentPath);
+            }
+
+            $stmt = $pdo->prepare("INSERT INTO `survey_management` (`survey_number`, `sub_division_number`, `owner_name`, `village_name`, `taluk`, `district`, `land_type`, `total_area`, `patta_number`, `fmb_number`, `latitude`, `longitude`, `survey_date`, `status`, `document_path`, `remarks`, `org_id`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([
+                $survey_number, $sub_division_number, $owner_name, $village_name, $taluk, $district, $land_type, $total_area, $patta_number, $fmb_number, $latitude, $longitude, $survey_date, $status, $documentPath, $remarks, $meOrgId
+            ]);
+            
+            $newId = $pdo->lastInsertId();
+
+            // Log History
+            $histStmt = $pdo->prepare("INSERT INTO `survey_history` (`survey_id`, `action`, `performed_by`, `details`) VALUES (?, ?, ?, ?)");
+            $histStmt->execute([$newId, 'Created', $meId, "Survey record created."]);
+
+            $response = ['success' => true, 'message' => 'Survey record created successfully'];
+        }
+        else if ($action === 'update_survey_record') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+
+            $survey_number = trim($_POST['survey_number'] ?? '');
+            $sub_division_number = trim($_POST['sub_division_number'] ?? '');
+            $owner_name = trim($_POST['owner_name'] ?? '');
+            $village_name = trim($_POST['village_name'] ?? '');
+            $taluk = trim($_POST['taluk'] ?? '');
+            $district = trim($_POST['district'] ?? '');
+            $land_type = trim($_POST['land_type'] ?? '');
+            $total_area = floatval($_POST['total_area'] ?? 0);
+            $patta_number = trim($_POST['patta_number'] ?? '');
+            $fmb_number = trim($_POST['fmb_number'] ?? '');
+            $latitude = trim($_POST['latitude'] ?? '');
+            $longitude = trim($_POST['longitude'] ?? '');
+            $survey_date = !empty($_POST['survey_date']) ? $_POST['survey_date'] : null;
+            $status = trim($_POST['status'] ?? 'Pending');
+            $remarks = trim($_POST['remarks'] ?? '');
+
+            $docUpdate = "";
+            $params = [
+                $survey_number, $sub_division_number, $owner_name, $village_name, $taluk, $district, 
+                $land_type, $total_area, $patta_number, $fmb_number, $latitude, $longitude, $survey_date, $status, $remarks
+            ];
+
+            if (isset($_FILES['document']) && $_FILES['document']['error'] === UPLOAD_ERR_OK) {
+                $uploadDir = 'uploads/';
+                if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
+                $documentPath = $uploadDir . time() . '_' . basename($_FILES['document']['name']);
+                move_uploaded_file($_FILES['document']['tmp_name'], $documentPath);
+                $docUpdate = ", `document_path` = ?";
+                $params[] = $documentPath;
+            }
+
+            $params[] = $id;
+            $params[] = $meOrgId;
+
+            $stmt = $pdo->prepare("UPDATE `survey_management` SET `survey_number`=?, `sub_division_number`=?, `owner_name`=?, `village_name`=?, `taluk`=?, `district`=?, `land_type`=?, `total_area`=?, `patta_number`=?, `fmb_number`=?, `latitude`=?, `longitude`=?, `survey_date`=?, `status`=?, `remarks`=? $docUpdate WHERE id=? AND org_id=?");
+            $stmt->execute($params);
+
+            // Log History
+            $histStmt = $pdo->prepare("INSERT INTO `survey_history` (`survey_id`, `action`, `performed_by`, `details`) VALUES (?, ?, ?, ?)");
+            $histStmt->execute([$id, 'Updated', $meId, "Survey record details updated."]);
+
+            $response = ['success' => true, 'message' => 'Survey record updated successfully'];
+        }
+        else if ($action === 'archive_survey_record') {
+            $id = (int)($_POST['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+            
+            $stmt = $pdo->prepare("UPDATE `survey_management` SET `is_archived` = 1 WHERE id = ? AND org_id = ?");
+            $stmt->execute([$id, $meOrgId]);
+
+            // Log History
+            $histStmt = $pdo->prepare("INSERT INTO `survey_history` (`survey_id`, `action`, `performed_by`, `details`) VALUES (?, ?, ?, ?)");
+            $histStmt->execute([$id, 'Archived', $meId, "Survey record archived."]);
+
+            $response = ['success' => true, 'message' => 'Survey record archived successfully'];
+        }
+        else if ($action === 'verify_survey_record') {
+            $id = (int)($_POST['id'] ?? 0);
+            $status = trim($_POST['status'] ?? 'Verified');
+            if (!$id) throw new Exception("Invalid ID.");
+
+            $stmt = $pdo->prepare("UPDATE `survey_management` SET `status` = ? WHERE id = ? AND org_id = ?");
+            $stmt->execute([$status, $id, $meOrgId]);
+
+            // Log History
+            $histStmt = $pdo->prepare("INSERT INTO `survey_history` (`survey_id`, `action`, `performed_by`, `details`) VALUES (?, ?, ?, ?)");
+            $histStmt->execute([$id, 'Status Changed', $meId, "Status updated to " . $status]);
+
+            $response = ['success' => true, 'message' => 'Survey status updated successfully'];
+        }
+        else if ($action === 'get_survey_history') {
+            $id = (int)($_GET['id'] ?? 0);
+            if (!$id) throw new Exception("Invalid ID.");
+
+            $stmt = $pdo->prepare("
+                SELECT h.*, e.name as user_name 
+                FROM `survey_history` h
+                LEFT JOIN `employees` e ON h.performed_by = e.id
+                WHERE h.survey_id = ? 
+                ORDER BY h.id DESC
+            ");
+            $stmt->execute([$id]);
+            $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $response = ['success' => true, 'history' => $history];
+        }
+        else if ($action === 'export_survey_csv') {
+            // Build query based on filters
+            $query = "SELECT * FROM `survey_management` WHERE org_id = ? AND is_archived = 0";
+            $params = [$meOrgId];
+
+            if (!empty($_GET['survey_number'])) {
+                $query .= " AND survey_number LIKE ?";
+                $params[] = '%' . $_GET['survey_number'] . '%';
+            }
+            if (!empty($_GET['village_name'])) {
+                $query .= " AND village_name LIKE ?";
+                $params[] = '%' . $_GET['village_name'] . '%';
+            }
+            if (!empty($_GET['taluk'])) {
+                $query .= " AND taluk LIKE ?";
+                $params[] = '%' . $_GET['taluk'] . '%';
+            }
+            if (!empty($_GET['district'])) {
+                $query .= " AND district LIKE ?";
+                $params[] = '%' . $_GET['district'] . '%';
+            }
+            if (!empty($_GET['status'])) {
+                $query .= " AND status = ?";
+                $params[] = $_GET['status'];
+            }
+            
+            $query .= " ORDER BY id DESC";
+            
+            $stmt = $pdo->prepare($query);
+            $stmt->execute($params);
+            $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Output CSV
+            header('Content-Type: text/csv');
+            header('Content-Disposition: attachment; filename="survey_records_' . date('Ymd_His') . '.csv"');
+            
+            $output = fopen('php://output', 'w');
+            fputcsv($output, ['ID', 'Survey Number', 'Sub Div', 'Owner Name', 'Village', 'Taluk', 'District', 'Land Type', 'Total Area', 'Patta', 'FMB', 'Status', 'Date']);
+            
+            foreach ($records as $r) {
+                fputcsv($output, [
+                    $r['id'], $r['survey_number'], $r['sub_division_number'], $r['owner_name'], $r['village_name'],
+                    $r['taluk'], $r['district'], $r['land_type'], $r['total_area'], $r['patta_number'], $r['fmb_number'],
+                    $r['status'], $r['survey_date']
+                ]);
+            }
+            fclose($output);
+            exit;
+        }
+
+        if ($action === 'save_public_key') {
+            $pubKey = trim($_POST['public_key'] ?? '');
+            $meId = (int)($jwtPayload['id'] ?? 0);
+            if ($pubKey && $meId) {
+                $stmt = $pdo->prepare("UPDATE employees SET public_key = ? WHERE id = ?");
+                $stmt->execute([$pubKey, $meId]);
+            }
+            $response = ['success' => true];
+        } else if ($action === 'get_public_keys') {
+            $userIdsRaw = $_GET['user_ids'] ?? '';
+            $ids = array_filter(array_map('intval', explode(',', $userIdsRaw)));
+            if (empty($ids)) throw new Exception("No user IDs provided.");
+            
+            $inQuery = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = $pdo->prepare("SELECT id, public_key FROM employees WHERE id IN ($inQuery)");
+            $stmt->execute($ids);
+            $keys = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            $keyMap = [];
+            foreach($keys as $k) {
+                if($k['public_key']) $keyMap[$k['id']] = $k['public_key'];
+            }
+            $response = ['success' => true, 'keys' => $keyMap];
+        } else if ($action === 'update_task_details') {
+>>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
             $taskId = (int)($_POST['task_id'] ?? 0);
             $newDueDate = trim($_POST['due_date'] ?? '');
             $newEstDays = (int)($_POST['estimated_duration'] ?? 0);

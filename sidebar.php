@@ -148,10 +148,16 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
                         <span>Settings</span>
                     </a>
                 </li>
+
             <?php endif; ?>
 
             <?php if ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Super Admin'): ?>
                 <li class="nav-item <?= $jwtPayload['role'] === 'Admin' ? 'active' : '' ?>" data-tab="organizations">
+
+                <?php else: ?>
+                    <!-- Platform Admin: sees only Organizations -->
+                <li class="nav-item active" data-tab="organizations">
+
                     <a href="#organizations">
                         <i data-lucide="building-2"></i>
                         <span>Organizations</span>
