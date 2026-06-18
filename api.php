@@ -407,7 +407,7 @@ try {
         } else if ($action === 'update_task_status') {
             $taskId = (int) ($_POST['task_id'] ?? 0);
             $status = trim($_POST['status'] ?? '');
-            if (!$taskId || !in_array($status, ['Todo', 'In Progress', 'In Review', 'Completed'])) {
+            if (!$taskId || !in_array($status, ['Todo', 'In Progress', 'In Review', 'Completed', 'Pending'])) {
                 throw new Exception("Invalid task or status.");
             }
             // Fetch task details for activity / notification

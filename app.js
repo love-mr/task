@@ -2199,6 +2199,7 @@ function renderKanban() {
 
     // Define columns
     const columns = [
+        { id: 'Pending', title: 'Pending', color: '#8b5cf6' },
         { id: 'Todo', title: 'Todo', color: '#64748b' },
         { id: 'In Progress', title: 'In Progress', color: '#2563eb' },
         { id: 'In Review', title: 'In Review', color: '#f59e0b' },

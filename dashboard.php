@@ -236,22 +236,22 @@ try {
         $pastDue = 0;
     } else {
         // Total Task: count of tasks assigned to me
-        $totalTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId")->fetchColumn() ?: 0;
+        $totalTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE t.`assigned_to` = $meId")->fetchColumn() ?: 0;
         
         // Assigned to me: tasks assigned to the logged-in employee
         $assignedToMe = $totalTasks;
 
         // Past due tasks: tasks not completed and due date before today
         $today = date('Y-m-d');
-        $dueToday = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND `due_date` = '$today'")->fetchColumn() ?: 0;
-        $pastDue = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND `status` != 'Completed' AND `due_date` < '$today'")->fetchColumn() ?: 0;
+        $dueToday = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE t.`assigned_to` = $meId AND t.`due_date` = '$today'")->fetchColumn() ?: 0;
+        $pastDue = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE t.`assigned_to` = $meId AND t.`status` != 'Completed' AND t.`due_date` < '$today'")->fetchColumn() ?: 0;
     }
 
     // User task counts (for normal employees / dashboard metrics)
-    $user_assignedTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND org_id = $meOrgId")->fetchColumn() ?: 0;
-    $user_inProgressTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND org_id = $meOrgId AND status = 'In Progress'")->fetchColumn() ?: 0;
-    $user_completedTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND org_id = $meOrgId AND status = 'Completed'")->fetchColumn() ?: 0;
-    $user_pendingTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND org_id = $meOrgId AND status != 'Completed'")->fetchColumn() ?: 0;
+    $user_assignedTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE t.`assigned_to` = $meId AND t.org_id = $meOrgId")->fetchColumn() ?: 0;
+    $user_inProgressTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE t.`assigned_to` = $meId AND t.org_id = $meOrgId AND t.status = 'In Progress'")->fetchColumn() ?: 0;
+    $user_completedTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE t.`assigned_to` = $meId AND t.org_id = $meOrgId AND t.status = 'Completed'")->fetchColumn() ?: 0;
+    $user_pendingTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE t.`assigned_to` = $meId AND t.org_id = $meOrgId AND t.status != 'Completed'")->fetchColumn() ?: 0;
 
     // RSK Approvals Dashboard Metrics
     $rsk_totalProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
@@ -259,9 +259,9 @@ try {
     $rsk_approvedProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE status = 'Active' OR status = 'Completed' AND org_id = $meOrgId")->fetchColumn() ?: 0;
     $rsk_rejectedProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE status IN ('Rejected', 'Query') AND org_id = $meOrgId")->fetchColumn() ?: 0;
     $rsk_activeClients = $pdo->query("SELECT COUNT(*) FROM `clients` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_surveyWorks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE (title LIKE '%Survey%' OR description LIKE '%Survey%') AND status != 'Completed' AND org_id = $meOrgId")->fetchColumn() ?: 0;
+    $rsk_surveyWorks = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE (t.title LIKE '%Survey%' OR t.description LIKE '%Survey%') AND t.status != 'Completed' AND t.org_id = $meOrgId")->fetchColumn() ?: 0;
     $rsk_totalEmployees = $pdo->query("SELECT COUNT(*) FROM `employees` WHERE role != 'Admin' AND org_id = $meOrgId")->fetchColumn() ?: 0;
-    $rsk_totalTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
+    $rsk_totalTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` t JOIN `projects` p ON t.project_id = p.id WHERE t.org_id = $meOrgId")->fetchColumn() ?: 0;
 
     // --- PIPELINE & SERVICES DYNAMIC COUNTS ---
     $pipelineRaw = $pdo->prepare("SELECT pipeline_stage, COUNT(*) as cnt FROM projects WHERE org_id = ? AND pipeline_stage IS NOT NULL AND pipeline_stage != '' GROUP BY pipeline_stage");
@@ -1547,6 +1547,7 @@ try {
                                 <div class="filter-dropdown-menu" id="tasks-status-filter-dropdown" style="right: 0; min-width: 140px; display: none; position: absolute; z-index: 100;">
                                     <div class="filter-dropdown-content">
                                         <a href="#" class="filter-status-item" data-status="All">All Statuses</a>
+                                        <a href="#" class="filter-status-item" data-status="Pending">Pending</a>
                                         <a href="#" class="filter-status-item" data-status="Todo">Todo</a>
                                         <a href="#" class="filter-status-item" data-status="In Progress">In Progress</a>
                                         <a href="#" class="filter-status-item" data-status="In Review">In Review</a>
@@ -4284,7 +4285,7 @@ ${p.description ? `<div class="section"><div class="section-title">Project Notes
             }
 
             // Tasks
-            const statusColors = { 'Todo': '#3b82f6', 'In Progress': '#f59e0b', 'Completed': '#10b981', 'In Review': '#8b5cf6' };
+            const statusColors = { 'Pending': '#a855f7', 'Todo': '#3b82f6', 'In Progress': '#f59e0b', 'Completed': '#10b981', 'In Review': '#8b5cf6' };
             const priorityColors = { 'High': '#ef4444', 'Medium': '#f59e0b', 'Low': '#22c55e' };
             const tasksEl = document.getElementById('pdm-tasks');
             if (tasks.length > 0) {
