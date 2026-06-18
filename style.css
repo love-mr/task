@@ -132,16 +132,16 @@ body {
 .sl-name {
     font-size: 14px;
     font-weight: 800;
-    color: #111827;
+    color: #ffffff;
     letter-spacing: -0.2px;
 }
-.sl-accent { color: #2563eb; }
+.sl-accent { color: #facc15; }
 .sl-sub {
     font-size: 8px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 2px;
-    color: #9ca3af;
+    color: rgba(255,255,255,0.65);
     margin-top: 1px;
 }
 
@@ -1893,11 +1893,13 @@ body {
     box-shadow: var(--shadow-card);
     transition: var(--transition);
     position: relative;
+    cursor: pointer;
 }
 
 .project-grid-card:hover {
     box-shadow: var(--shadow-md);
     border-color: var(--primary);
+    transform: translateY(-1px);
 }
 
 .project-grid-header {
@@ -2314,6 +2316,7 @@ body {
     display: flex;
     flex-direction: column;
     min-height: 220px;
+    cursor: pointer;
 }
 
 .project-grid-card:hover {
@@ -3122,9 +3125,15 @@ body.dark-theme .priority-tag.pri-low {
     color: var(--pri-low-text) !important;
 }
 
-/* Sidebar Logo Accent */
+/* Sidebar Logo Text – ensure visibility on dark sidebar */
+body.dark-theme .sl-name {
+    color: #f8fafc !important;
+}
+body.dark-theme .sl-sub {
+    color: rgba(248,250,252,0.6) !important;
+}
 body.dark-theme .sl-accent {
-    color: #38bdf8 !important;
+    color: #facc15 !important;
 }
 
 /* Dropdown and Select Fields */
@@ -3402,4 +3411,40 @@ body.dark-theme #notes-tags-filter-dropdown a:hover {
     background-color: #334155 !important;
     color: #38bdf8 !important;
 }
-
+/* ───────── Goal Tracker Dark Theme ───────── */
+body.dark-theme .goal-card {
+    background-color: #1e293b !important;
+    border-color: #334155 !important;
+}
+body.dark-theme .goal-card span[style*="color:#0f172a"],
+body.dark-theme .goal-card div[style*="color:#0f172a"] {
+    color: #f8fafc !important;
+}
+body.dark-theme .goal-card div[style*="color:#64748b"],
+body.dark-theme .goal-card span[style*="color:#64748b"] {
+    color: #94a3b8 !important;
+}
+body.dark-theme .goal-card div[style*="background:#f1f5f9"] {
+    background-color: #334155 !important;
+}
+body.dark-theme #goalModal > div {
+    background: #1e293b !important;
+    border: 1px solid #334155;
+}
+body.dark-theme #goalModal h3 {
+    color: #f8fafc !important;
+}
+body.dark-theme #goalModal label {
+    color: #94a3b8 !important;
+}
+body.dark-theme #goalModal input,
+body.dark-theme #goalModal textarea,
+body.dark-theme #goalModal select {
+    background: #0f172a !important;
+    border-color: #334155 !important;
+    color: #f8fafc !important;
+}
+/* Goal tracker panel header text in dark mode */
+body.dark-theme .rsk-panel div[style*="color:#0f172a"] {
+    color: #f8fafc !important;
+}

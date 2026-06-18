@@ -38,6 +38,8 @@ document.addEventListener('DOMContentLoaded', function() {
     setupAttendanceFiltersAndExport();
     setupUsersManagement();
     setupLayoutModule();
+    setupDashboardTriggers();
+    setupTaskEditFeatures();
 });
 
 // ==========================================================================
@@ -84,6 +86,7 @@ function setupSPARouting() {
         // Update page title
         const titles = {
             'dashboard': 'Dashboard',
+            'organizations': 'Organizations',
             'tasks': 'Tasks',
             'projects': 'Projects',
             'discussion': 'Discussion',
@@ -341,7 +344,8 @@ function setupModals() {
         'btn-add-building': 'modal-building',
         'btn-add-singleplot': 'modal-singleplot',
         'btn-add-ual': 'modal-ual',
-        'btn-add-landsurvey': 'modal-landsurvey'
+        'btn-add-landsurvey': 'modal-landsurvey',
+        'btn-view-all-notifications': 'modal-all-notifications'
     };
 
     Object.keys(triggers).forEach(btnId => {
@@ -387,6 +391,7 @@ function setupFormActions() {
         'form-edit-client': 'api.php?action=update_client',
         'form-new-project': 'api.php?action=create_project',
         'form-new-task': 'api.php?action=create_task',
+        'form-edit-task': 'api.php?action=update_task_details',
         'form-new-timesheet': 'api.php?action=create_timesheet',
         'form-new-employee': 'api.php?action=create_employee',
         'form-update-settings': 'api.php?action=update_settings',
@@ -2901,6 +2906,26 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+
+    document.querySelectorAll('.btn-delete-org').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const orgId = this.getAttribute('data-org-id');
+            if (confirm('Are you absolutely sure you want to delete this organization and ALL its projects, tasks, employees, and data? This action CANNOT be undone.')) {
+                const formData = new FormData();
+                formData.append('action', 'delete_org');
+                formData.append('org_id', orgId);
+                fetch('api.php', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        window.location.reload();
+                    } else {
+                        alert(data.message);
+                    }
+                });
+            }
+        });
+    });
 });
 
 // ==========================================================================
@@ -2911,9 +2936,11 @@ function setupLayoutModule() {
     const container = document.getElementById('layout-sequence-container');
     const wrapper = document.getElementById('layout-tasks-wrapper');
     const btnSaveLayout = document.getElementById('btn-save-layout');
+    const btnLoadTimeline = document.getElementById('btn-load-timeline');
 
     if (!btnGenerate || !container || !wrapper || !btnSaveLayout) return;
 
+    // ---- Generate Input Rows ----
     btnGenerate.addEventListener('click', function() {
         const numTasks = parseInt(document.getElementById('layout-num-tasks').value);
         if (isNaN(numTasks) || numTasks <= 0) {
@@ -2924,70 +2951,115 @@ function setupLayoutModule() {
         wrapper.innerHTML = '';
         for (let i = 1; i <= numTasks; i++) {
             const html = `
-                <div class="layout-task-row" style="background: #f8fafc; padding: 15px; border: 1px solid #e2e8f0; border-radius: 6px; display: flex; gap: 15px; align-items: flex-end;">
-                    <div style="font-weight: 700; color: #475569; width: 30px; padding-bottom: 8px;">${i}.</div>
+                <div class="layout-task-row" style="background: #f8fafc; padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 6px; display: flex; gap: 12px; align-items: flex-end;">
+                    <div style="font-weight: 700; color: #3b82f6; width: 24px; padding-bottom: 8px; font-size:13px;">${i}.</div>
                     <div class="form-group" style="flex: 2; margin-bottom: 0;">
                         <label class="form-label" style="font-size: 11px;">Task Title</label>
-                        <input type="text" class="form-control lq-title" placeholder="e.g. Initial Survey">
+                        <input type="text" class="form-control lq-title" placeholder="e.g. Initial Survey" style="height:34px;">
                     </div>
-                    <div class="form-group" style="flex: 1.5; margin-bottom: 0;">
-                        <label class="form-label" style="font-size: 11px;">Assignee (Emp ID / Name)</label>
-                        <!-- For simplicity we use a text input, but ideally this would be a select populated via PHP -->
-                        <input type="text" class="form-control lq-assignee" placeholder="Emp ID or Name">
+                    <div class="form-group" style="flex: 1.5; margin-bottom: 0; position: relative;">
+                        <label class="form-label" style="font-size: 11px;">Assignee</label>
+                        <input type="text" class="form-control lq-assignee-input" placeholder="Type name..." autocomplete="off" style="height:34px;">
+                        <input type="hidden" class="lq-assignee-val">
+                        <div class="lq-assignee-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.12); max-height: 160px; overflow-y: auto; z-index: 9999;"></div>
                     </div>
                     <div class="form-group" style="flex: 1; margin-bottom: 0;">
                         <label class="form-label" style="font-size: 11px;">Priority</label>
-                        <select class="form-control lq-priority">
+                        <select class="form-control lq-priority" style="height:34px;">
                             <option value="Medium">Medium</option>
                             <option value="High">High</option>
                             <option value="Low">Low</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                    <div class="form-group" style="flex: 0 0 80px; margin-bottom: 0;">
                         <label class="form-label" style="font-size: 11px;">Est. Days</label>
-                        <input type="number" class="form-control lq-days" value="1" min="1">
+                        <input type="number" class="form-control lq-days" value="1" min="1" style="height:34px;">
                     </div>
                 </div>
             `;
             wrapper.insertAdjacentHTML('beforeend', html);
         }
+
+        // Setup autocomplete dropdown events
+        const rows = wrapper.querySelectorAll('.layout-task-row');
+        const employeesList = window.VYALA_TASKPAD_DASHBOARD_DATA?.employees || [];
+
+        rows.forEach(row => {
+            const input = row.querySelector('.lq-assignee-input');
+            const hidden = row.querySelector('.lq-assignee-val');
+            const dropdown = row.querySelector('.lq-assignee-dropdown');
+
+            function renderDropdown(filterText = '') {
+                const query = filterText.toLowerCase().trim();
+                const filtered = employeesList.filter(e => e.name.toLowerCase().includes(query));
+                dropdown.innerHTML = '';
+                if (filtered.length === 0) {
+                    dropdown.innerHTML = '<div style="padding: 8px 12px; color: #94a3b8; font-size: 12px;">No matches</div>';
+                } else {
+                    filtered.forEach(e => {
+                        const item = document.createElement('div');
+                        item.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:12px;color:#334155;border-bottom:1px solid #f1f5f9;';
+                        item.innerText = e.name;
+                        item.addEventListener('mouseenter', () => item.style.background = '#f1f5f9');
+                        item.addEventListener('mouseleave', () => item.style.background = 'transparent');
+                        item.addEventListener('mousedown', (evt) => {
+                            evt.preventDefault();
+                            input.value = e.name;
+                            hidden.value = e.id;
+                            dropdown.style.display = 'none';
+                        });
+                        dropdown.appendChild(item);
+                    });
+                }
+            }
+
+            input.addEventListener('focus', () => { renderDropdown(input.value); dropdown.style.display = 'block'; });
+            input.addEventListener('input', () => { hidden.value = ''; renderDropdown(input.value); dropdown.style.display = 'block'; });
+            input.addEventListener('blur', () => { setTimeout(() => { dropdown.style.display = 'none'; }, 150); });
+        });
+
         container.style.display = 'block';
     });
 
+    // ---- Save & Generate Timeline ----
     btnSaveLayout.addEventListener('click', function() {
         const projectId = document.getElementById('layout-project').value;
         const startDate = document.getElementById('layout-start-date').value;
         const targetDate = document.getElementById('layout-target-date').value;
 
-        if (!projectId) {
-            alert('Please select a project.');
-            return;
-        }
-        if (!startDate) {
-            alert('Please specify a start date.');
-            return;
-        }
+        if (!projectId) { alert('Please select a project.'); return; }
+        if (!startDate) { alert('Please specify a start date.'); return; }
 
         const taskRows = wrapper.querySelectorAll('.layout-task-row');
         const sequenceData = [];
+        const employeesList = window.VYALA_TASKPAD_DASHBOARD_DATA?.employees || [];
 
         taskRows.forEach((row, idx) => {
+            const assigneeInput = row.querySelector('.lq-assignee-input');
+            const assigneeVal = row.querySelector('.lq-assignee-val');
+            let assignee = assigneeVal ? assigneeVal.value : '';
+            if (!assignee && assigneeInput) {
+                const name = assigneeInput.value.toLowerCase().trim();
+                const matched = employeesList.find(e => e.name.toLowerCase() === name);
+                assignee = matched ? matched.id : name;
+            }
+
             sequenceData.push({
                 title: row.querySelector('.lq-title').value,
-                assignee: row.querySelector('.lq-assignee').value,
+                assignee: assignee,
                 priority: row.querySelector('.lq-priority').value,
                 days: parseInt(row.querySelector('.lq-days').value) || 1,
                 order: idx + 1
             });
         });
 
-        // Validate
         for (let t of sequenceData) {
-            if (!t.title) {
-                alert('Please provide titles for all tasks.');
-                return;
-            }
+            if (!t.title) { alert('Please provide titles for all tasks.'); return; }
         }
+
+        const btnText = btnSaveLayout.innerHTML;
+        btnSaveLayout.disabled = true;
+        btnSaveLayout.innerHTML = '⏳ Saving...';
 
         const formData = new FormData();
         formData.append('action', 'save_layout');
@@ -2999,20 +3071,212 @@ function setupLayoutModule() {
         fetch('api.php', { method: 'POST', body: formData })
         .then(r => r.json())
         .then(res => {
+            btnSaveLayout.disabled = false;
+            btnSaveLayout.innerHTML = btnText;
             if (res.success) {
-                alert('Layout sequence saved successfully!');
-                window.location.hash = '#tasks';
-                window.location.reload();
+                // Collapse form
+                container.style.display = 'none';
+                wrapper.innerHTML = '';
+                // Render the timeline
+                renderGanttTimeline(res.project_name || 'Project', res.tasks, startDate, targetDate);
             } else {
                 alert('Error: ' + res.message);
             }
         })
         .catch(err => {
+            btnSaveLayout.disabled = false;
+            btnSaveLayout.innerHTML = btnText;
             console.error(err);
             alert('A network error occurred.');
         });
     });
+
+    // ---- Load Existing Timeline ----
+    if (btnLoadTimeline) {
+        btnLoadTimeline.addEventListener('click', function() {
+            const projectId = document.getElementById('timeline-load-project').value;
+            if (!projectId) { alert('Please select a project to view.'); return; }
+
+            const hint = document.getElementById('timeline-load-hint');
+            if (hint) hint.textContent = '⏳ Loading...';
+            btnLoadTimeline.disabled = true;
+
+            fetch(`api.php?action=get_timeline&project_id=${projectId}`)
+            .then(r => r.json())
+            .then(res => {
+                btnLoadTimeline.disabled = false;
+                if (hint) hint.textContent = 'Select a project and click Load Timeline to view its Gantt chart.';
+                if (res.success) {
+                    if (!res.tasks || res.tasks.length === 0) {
+                        alert('No tasks found for this project. Generate a layout sequence first.');
+                        return;
+                    }
+                    renderGanttTimeline(res.project.name, res.tasks, null, res.project.due_date);
+                } else {
+                    alert('Error: ' + res.message);
+                }
+            })
+            .catch(err => {
+                btnLoadTimeline.disabled = false;
+                if (hint) hint.textContent = 'Select a project and click Load Timeline to view its Gantt chart.';
+                console.error(err);
+                alert('Network error loading timeline.');
+            });
+        });
+    }
 }
+
+// ---- Gantt Timeline Renderer ----
+function renderGanttTimeline(projectName, tasks, startDate, targetDate) {
+    const area = document.getElementById('layout-timeline-area');
+    const chart = document.getElementById('layout-gantt-chart');
+    const titleEl = document.getElementById('tl-project-title');
+    const metaEl = document.getElementById('tl-project-meta');
+
+    if (!area || !chart) return;
+
+    // Determine date range
+    let minDate = null, maxDate = null;
+    tasks.forEach(t => {
+        const due = t.end_date || t.due_date;
+        const start = t.start_date;
+        if (start) { if (!minDate || start < minDate) minDate = start; }
+        if (due)   { if (!maxDate || due > maxDate) maxDate = due; }
+    });
+
+    if (startDate && (!minDate || startDate < minDate)) minDate = startDate;
+    if (!minDate) minDate = new Date().toISOString().slice(0,10);
+    if (!maxDate) maxDate = targetDate || minDate;
+
+    // Expand range by a few days on each side for padding
+    const rangeStart = new Date(minDate);
+    rangeStart.setDate(rangeStart.getDate() - 1);
+    const rangeEnd = new Date(maxDate);
+    rangeEnd.setDate(rangeEnd.getDate() + 2);
+
+    const totalDays = Math.max(Math.ceil((rangeEnd - rangeStart) / 86400000), 7);
+    const dayWidth = Math.max(38, Math.min(70, Math.floor(900 / totalDays)));
+
+    // Build date headers
+    let dateHeaders = '';
+    let dayLabels = '';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const days = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+
+    let prevMonth = -1;
+    const allDates = [];
+    for (let d = new Date(rangeStart); d <= rangeEnd; d.setDate(d.getDate() + 1)) {
+        allDates.push(new Date(d));
+    }
+
+    // Month spans
+    let monthGroups = [];
+    allDates.forEach((d, i) => {
+        const m = d.getMonth();
+        if (m !== prevMonth) {
+            monthGroups.push({ month: m, year: d.getFullYear(), count: 1, startIdx: i });
+            prevMonth = m;
+        } else {
+            monthGroups[monthGroups.length - 1].count++;
+        }
+    });
+
+    const LABEL_COL_W = 200;
+
+    let monthRow = `<div style="display:flex;">`;
+    monthRow += `<div style="width:${LABEL_COL_W}px; min-width:${LABEL_COL_W}px; flex-shrink:0;"></div>`;
+    monthGroups.forEach(mg => {
+        monthRow += `<div style="width:${mg.count * dayWidth}px; min-width:${mg.count * dayWidth}px; text-align:center; font-size:11px; font-weight:700; color:#0f172a; border-left:1px solid #e2e8f0; padding:4px 0; background:#f8fafc;">${months[mg.month]} ${mg.year}</div>`;
+    });
+    monthRow += `</div>`;
+
+    let dayRow = `<div style="display:flex; border-bottom:2px solid #e2e8f0;">`;
+    dayRow += `<div style="width:${LABEL_COL_W}px; min-width:${LABEL_COL_W}px; flex-shrink:0; font-size:10px; font-weight:700; color:#94a3b8; padding:4px 8px; background:#f1f5f9;">TASK</div>`;
+    const today = new Date().toISOString().slice(0,10);
+    allDates.forEach(d => {
+        const iso = d.toISOString().slice(0,10);
+        const isToday = iso === today;
+        const isWeekend = (d.getDay() === 0 || d.getDay() === 6);
+        const bg = isToday ? '#3b82f6' : (isWeekend ? '#f8fafc' : '#fff');
+        const col = isToday ? '#fff' : (isWeekend ? '#94a3b8' : '#475569');
+        dayRow += `<div style="width:${dayWidth}px; min-width:${dayWidth}px; text-align:center; font-size:9px; font-weight:${isToday?700:500}; color:${col}; background:${bg}; border-left:1px solid #f1f5f9; padding:3px 0;">${days[d.getDay()]}<br>${d.getDate()}</div>`;
+    });
+    dayRow += `</div>`;
+
+    // Priority colors
+    const priorityColor = { High: '#ef4444', Medium: '#f59e0b', Low: '#22c55e' };
+    const statusColor   = { 'Todo': '#3b82f6', 'In Progress': '#f59e0b', 'Completed': '#10b981', 'In Review': '#8b5cf6' };
+
+    // Task rows
+    let taskRows = '';
+    tasks.forEach((t, idx) => {
+        const taskStart = new Date(t.start_date || rangeStart.toISOString().slice(0,10));
+        const taskEnd   = new Date(t.end_date   || t.due_date || taskStart);
+
+        const offsetDays = Math.max(0, Math.floor((taskStart - rangeStart) / 86400000));
+        const spanDays   = Math.max(1, Math.ceil((taskEnd   - taskStart)  / 86400000));
+
+        const barLeft   = offsetDays * dayWidth;
+        const barWidth  = spanDays * dayWidth - 2;
+        const pColor    = priorityColor[t.priority] || '#6366f1';
+        const sColor    = statusColor[t.status]     || '#6366f1';
+        const rowBg     = idx % 2 === 0 ? '#fff' : '#fafafa';
+        const assignee  = t.assignee || t.assigned_name || '—';
+        const status    = t.status || 'Todo';
+
+        // Generate day cells for background grid
+        let dayCells = '';
+        allDates.forEach(d => {
+            const isWeekend = (d.getDay() === 0 || d.getDay() === 6);
+            const iso = d.toISOString().slice(0,10);
+            const isToday = iso === today;
+            const cellBg = isToday ? 'rgba(59,130,246,0.06)' : (isWeekend ? '#f8fafc' : 'transparent');
+            dayCells += `<div style="width:${dayWidth}px; min-width:${dayWidth}px; height:44px; border-left:1px solid #f1f5f9; background:${cellBg}; flex-shrink:0;"></div>`;
+        });
+
+        taskRows += `
+        <div style="display:flex; border-bottom:1px solid #f1f5f9; background:${rowBg}; position:relative; align-items:center;">
+            <!-- Label -->
+            <div style="width:${LABEL_COL_W}px; min-width:${LABEL_COL_W}px; flex-shrink:0; padding:6px 10px; z-index:2; background:${rowBg}; border-right:1px solid #e2e8f0;">
+                <div style="font-size:12px; font-weight:600; color:#0f172a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${t.title}">${(t.sequence_order || (idx+1))}. ${t.title}</div>
+                <div style="display:flex; gap:5px; margin-top:3px; align-items:center; flex-wrap:wrap;">
+                    <span style="font-size:9px; background:${pColor}22; color:${pColor}; padding:1px 5px; border-radius:3px; font-weight:600;">${t.priority || 'Med'}</span>
+                    <span style="font-size:9px; background:${sColor}22; color:${sColor}; padding:1px 5px; border-radius:3px; font-weight:600;">${status}</span>
+                    <span style="font-size:9px; color:#94a3b8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${assignee}">👤 ${assignee}</span>
+                </div>
+            </div>
+            <!-- Grid cells -->
+            <div style="display:flex; position:relative; flex:1; height:44px; overflow:hidden;">
+                ${dayCells}
+                <!-- Gantt Bar -->
+                <div style="position:absolute; top:8px; left:${barLeft}px; width:${barWidth}px; height:28px; background:${sColor}; border-radius:5px; display:flex; align-items:center; padding:0 8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.15); z-index:3;" title="${t.title} | ${t.start_date || ''} → ${t.end_date || t.due_date || ''} | ${status}">
+                    <span style="font-size:10px; font-weight:600; color:#fff; white-space:nowrap; text-overflow:ellipsis; overflow:hidden;">${t.title}</span>
+                </div>
+            </div>
+        </div>`;
+    });
+
+    // Assemble chart
+    const taskCount = tasks.length;
+    const projDue = targetDate || (tasks[taskCount-1]?.end_date || tasks[taskCount-1]?.due_date || '');
+    titleEl.textContent = '📋 ' + projectName;
+    metaEl.textContent = `${taskCount} task${taskCount !== 1 ? 's' : ''} · Start: ${startDate || minDate || '—'} · Target: ${projDue || '—'}`;
+
+    chart.innerHTML = `
+    <div style="font-family: inherit; min-width: ${LABEL_COL_W + allDates.length * dayWidth}px;">
+        ${monthRow}
+        ${dayRow}
+        ${taskRows}
+        <div style="display:flex; margin-top:12px; gap:16px; padding:0 4px; flex-wrap:wrap; align-items:center;">
+            <span style="font-size:10px; color:#94a3b8;">📅 Today: ${today}</span>
+            <span style="font-size:10px; color:#94a3b8;">🏗️ ${taskCount} tasks in sequence</span>
+        </div>
+    </div>`;
+
+    area.style.display = 'block';
+    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 
 // ==========================================================================
 // REAL ESTATE MODULES LOGIC
@@ -3244,3 +3508,111 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+function setupDashboardTriggers() {
+    // 1. Quick Action Buttons
+    document.querySelectorAll('.rsk-qa-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const act = btn.getAttribute('data-action');
+            if (act === 'new-project') {
+                const m = document.getElementById('modal-project');
+                if (m) m.classList.add('active');
+            } else if (act === 'add-client') {
+                const m = document.getElementById('modal-client');
+                if (m) m.classList.add('active');
+            } else if (act === 'new-survey') {
+                const m = document.getElementById('modal-landsurvey');
+                if (m) m.classList.add('active');
+            } else if (act === 'upload-document') {
+                const m = document.getElementById('modal-upload-doc');
+                if (m) m.classList.add('active');
+            } else if (act === 'noc-tracker') {
+                window.location.hash = '#ual';
+            } else if (act === 'payment-entry') {
+                const m = document.getElementById('modal-logtime');
+                if (m) m.classList.add('active');
+            } else if (act === 'task-manager') {
+                window.location.hash = '#tasks';
+            } else if (act === 'reports') {
+                window.location.hash = '#reports';
+            }
+        });
+    });
+
+    // 2. Tab Trigger Click handler modifications (Status filtering support)
+    document.querySelectorAll('.tab-trigger').forEach(trigger => {
+        trigger.addEventListener('click', function(e) {
+            const target = trigger.getAttribute('data-target');
+            const statusFilter = trigger.getAttribute('data-filter-status');
+            
+            if (statusFilter && typeof currentProjectsFilterStatus !== 'undefined') {
+                currentProjectsFilterStatus = statusFilter;
+                const statusBtn = document.getElementById('projects-status-filter-toggle');
+                if (statusBtn) {
+                    statusBtn.innerHTML = `Status: ${statusFilter} <i data-lucide="chevron-down"></i>`;
+                    if (typeof lucide !== 'undefined') lucide.createIcons();
+                }
+                filterAndSortProjects();
+            }
+
+            if (target) {
+                window.location.hash = `#${target}`;
+            }
+        });
+    });
+
+    // 3. Make metrics cards (.rsk-card-sm) clickable
+    document.querySelectorAll('.rsk-card-sm').forEach(card => {
+        card.addEventListener('click', function(e) {
+            // Avoid recursion if the link itself was clicked directly
+            if (e.target.closest('.rsk-card-link')) return;
+            const link = card.querySelector('.rsk-card-link');
+            if (link) {
+                link.click();
+            }
+        });
+    });
+}
+
+function setupTaskEditFeatures() {
+    // Edit task button click handler (delegated)
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.btn-edit-task');
+        if (btn) {
+            e.preventDefault();
+            const taskId = btn.getAttribute('data-id');
+            const title = btn.getAttribute('data-title');
+            const due = btn.getAttribute('data-due');
+            const days = btn.getAttribute('data-days');
+
+            const modal = document.getElementById('modal-edit-task');
+            if (modal) {
+                document.getElementById('edit-tk-id').value = taskId;
+                document.getElementById('edit-tk-title').value = title;
+                document.getElementById('edit-tk-due').value = due || '';
+                document.getElementById('edit-tk-days').value = days || '1';
+                modal.classList.add('active');
+            }
+        }
+    });
+
+    // Edit task double-click handler on kanban card (delegated)
+    document.addEventListener('dblclick', function(e) {
+        const card = e.target.closest('.kanban-card');
+        if (card) {
+            const taskId = card.getAttribute('data-task-id');
+            const tasks = window.VYALA_TASKPAD_DASHBOARD_DATA?.tasks || [];
+            const t = tasks.find(item => item.id == taskId);
+            if (t) {
+                const modal = document.getElementById('modal-edit-task');
+                if (modal) {
+                    document.getElementById('edit-tk-id').value = t.id;
+                    document.getElementById('edit-tk-title').value = t.title;
+                    document.getElementById('edit-tk-due').value = t.due_date || '';
+                    document.getElementById('edit-tk-days').value = t.estimated_duration || '1';
+                    modal.classList.add('active');
+                }
+            }
+        }
+    });
+}

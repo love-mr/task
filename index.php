@@ -785,8 +785,9 @@ if (verify_jwt($jwtToken)) {
         <div class="account-wrapper">
             <button class="btn-account" id="acc-btn">Account <i data-lucide="chevron-down"></i></button>
             <div class="account-drop" id="acc-drop">
-                <a href="login.php"><i data-lucide="log-in"></i> Login</a>
-                <a href="login.php?tab=signup"><i data-lucide="user-plus"></i> Sign Up</a>
+                <a href="login.php?tab=login"><i data-lucide="log-in"></i> Login</a>
+                <a href="register.php"><i data-lucide="user-plus"></i> Signup</a>
+                <a href="login.php?tab=admin"><i data-lucide="shield-check"></i> Admin Login</a>
             </div>
         </div>
     </div>
@@ -804,7 +805,7 @@ if (verify_jwt($jwtToken)) {
 
         <div class="hero-btns">
             <a href="demo.php" class="btn-primary">Request A Demo</a>
-            <a href="login.php?tab=signup" class="btn-outline">Start A Free Trial</a>
+            <a href="register.php" class="btn-outline">Start A Free Trial</a>
         </div>
 
         <div class="store-badges">

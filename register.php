@@ -7,6 +7,9 @@ $success = '';
 $companyName = '';
 $name = '';
 $email = '';
+$phone = '';
+$address = '';
+$details = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $companyName = trim($_POST['company_name'] ?? '');
@@ -14,9 +17,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     $confirmPassword = $_POST['confirm_password'] ?? '';
+    $phone = trim($_POST['phone'] ?? '');
+    $address = trim($_POST['address'] ?? '');
+    $details = trim($_POST['details'] ?? '');
 
-    if (empty($companyName) || empty($name) || empty($email) || empty($password) || empty($confirmPassword)) {
-        $error = 'All fields are required.';
+    if (empty($companyName) || empty($name) || empty($email) || empty($password) || empty($confirmPassword) || empty($phone) || empty($address)) {
+        $error = 'All fields except details are required.';
     } else if ($password !== $confirmPassword) {
         $error = 'Passwords do not match.';
     } else {
@@ -35,9 +41,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Email is already registered. Please sign in instead.';
                 } else {
                     // Create organization with Pending status
-                    $stmtOrg = $pdo->prepare("INSERT INTO `organizations` (`name`, `slug`, `status`) VALUES (?, ?, 'Pending')");
-                    $stmtOrg->execute([$companyName, $slug]);
+                    $stmtOrg = $pdo->prepare("INSERT INTO `organizations` (`name`, `slug`, `status`, `phone`, `address`, `details`) VALUES (?, ?, 'Pending', ?, ?, ?)");
+                    $stmtOrg->execute([$companyName, $slug, $phone, $address, $details]);
                     $orgId = $pdo->lastInsertId();
+
+                    // Clean up any potential orphan records matching this organization ID (e.g. from manually deleted testing database entries)
+                    try {
+                        $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+                    } catch (PDOException $ex) {}
+
+                    try {
+                        $pdo->prepare("DELETE FROM `discussion_messages` WHERE `discussion_id` IN (SELECT `id` FROM `discussions` WHERE `org_id` = ?)")->execute([$orgId]);
+                    } catch (PDOException $ex) {}
+                    try {
+                        $pdo->prepare("DELETE FROM `discussion_members` WHERE `discussion_id` IN (SELECT `id` FROM `discussions` WHERE `org_id` = ?)")->execute([$orgId]);
+                    } catch (PDOException $ex) {}
+                    try {
+                        $pdo->prepare("DELETE FROM `project_members` WHERE `project_id` IN (SELECT `id` FROM `projects` WHERE `org_id` = ?)")->execute([$orgId]);
+                    } catch (PDOException $ex) {}
+
+                    $cleanupTables = ['employees', 'projects', 'tasks', 'timesheets', 'documents', 'discussions', 'clients', 'pin_notes', 'notifications', 'activities', 'attendance', 'buildings', 'single_plots', 'ual_records', 'land_surveys'];
+                    foreach ($cleanupTables as $tbl) {
+                        try {
+                            $pdo->prepare("DELETE FROM `$tbl` WHERE `org_id` = ?")->execute([$orgId]);
+                        } catch (PDOException $ex) {}
+                    }
+
+                    try {
+                        $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                    } catch (PDOException $ex) {}
 
                     // Generate sequential employee code
                     $latestCodeStmt = $pdo->query("SELECT emp_code FROM employees WHERE emp_code LIKE 'T-%' ORDER BY id DESC LIMIT 1");
@@ -67,6 +99,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $companyName = '';
                     $name = '';
                     $email = '';
+                    $phone = '';
+                    $address = '';
+                    $details = '';
                 }
             }
         } catch (PDOException $e) {
@@ -559,6 +594,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div class="input-container">
                             <i data-lucide="mail" class="field-icon"></i>
                             <input type="email" name="email" id="email" class="form-input" placeholder="Email Address" value="<?= htmlspecialchars($email) ?>" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="input-container">
+                            <i data-lucide="phone" class="field-icon"></i>
+                            <input type="tel" name="phone" id="phone" class="form-input" placeholder="Organization Phone Number" value="<?= htmlspecialchars($phone) ?>" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="input-container">
+                            <i data-lucide="map-pin" class="field-icon"></i>
+                            <input type="text" name="address" id="address" class="form-input" placeholder="Organization Address" value="<?= htmlspecialchars($address) ?>" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="input-container">
+                            <i data-lucide="info" class="field-icon"></i>
+                            <input type="text" name="details" id="details" class="form-input" placeholder="Organization Details" value="<?= htmlspecialchars($details) ?>">
                         </div>
                     </div>
 

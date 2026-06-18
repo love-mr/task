@@ -10,8 +10,8 @@ if (verify_jwt($jwtToken)) {
     exit;
 }
 
-$error = '';
-$success = '';
+$error = trim($_GET['error'] ?? '');
+$success = trim($_GET['success'] ?? '');
 $email = '';
 $name = '';
 
@@ -70,33 +70,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Admin Login logic
         if (empty($email) || empty($password)) {
             $error = 'Please enter admin username and password.';
-        } else if ($email !== 'admin' || $password !== 'admin@123') {
-            $error = 'Invalid admin credentials.';
-        } else {
+        } else if ($email === SUPER_ADMIN_EMAIL && $password === SUPER_ADMIN_PASSWORD) {
+            $tokenPayload = [
+                'id'       => 0,
+                'name'     => 'Super Admin',
+                'email'    => SUPER_ADMIN_EMAIL,
+                'role'     => 'Super Admin',
+                'emp_code' => 'T-000000',
+                'org_id'   => 0   // Global View by default
+            ];
+            $jwt = generate_jwt($tokenPayload);
+            setcookie('vyala_taskpad_jwt_token', $jwt, time() + 86400, '/', '', false, true);
+            header("Location: dashboard.php");
+            exit;
+        } else if ($email === NORMAL_ADMIN_USERNAME && $password === NORMAL_ADMIN_PASSWORD) {
             try {
                 $stmt = $pdo->prepare("SELECT * FROM `employees` WHERE `email` = 'admin'");
                 $stmt->execute();
                 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-                if ($user) {
-                    $tokenPayload = [
-                        'id'       => $user['id'],
-                        'name'     => $user['name'],
-                        'email'    => $user['email'],
-                        'role'     => $user['role'],
-                        'emp_code' => $user['emp_code'],
-                        'org_id'   => 0   // 0 = platform admin, no org
-                    ];
-                    $jwt = generate_jwt($tokenPayload);
-                    setcookie('vyala_taskpad_jwt_token', $jwt, time() + 86400, '/', '', false, true);
-                    header("Location: dashboard.php");
-                    exit;
-                } else {
-                    $error = 'Admin account not found in database.';
-                }
+                $tokenPayload = [
+                    'id'       => $user ? $user['id'] : 9999,
+                    'name'     => $user ? $user['name'] : 'Admin',
+                    'email'    => NORMAL_ADMIN_USERNAME,
+                    'role'     => 'Admin',
+                    'emp_code' => $user ? $user['emp_code'] : 'T-130000',
+                    'org_id'   => 0   // Platform admin, no org
+                ];
+                $jwt = generate_jwt($tokenPayload);
+                setcookie('vyala_taskpad_jwt_token', $jwt, time() + 86400, '/', '', false, true);
+                header("Location: dashboard.php");
+                exit;
             } catch (PDOException $e) {
                 $error = 'Database error: ' . $e->getMessage();
             }
+        } else {
+            $error = 'Invalid admin credentials.';
         }
     } else {
         // Sign in logic
@@ -113,10 +122,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($user && password_verify($password, $user['password'])) {
                     $empStatus = $user['status'] ?? 'Active';
                     $orgStatus = $user['org_status'] ?? 'Active';
-                    if ($orgStatus === 'Pending') {
-                        $error = 'Your organization is pending admin approval. Please wait.';
-                    } else if ($orgStatus === 'Rejected') {
-                        $error = 'Your organization access has been revoked. Contact support.';
+                    if ($orgStatus === 'Pending' || $orgStatus === 'Rejected') {
+                        $error = 'Your organization is not yet approved by the administrator.';
                     } else if ($empStatus !== 'Approved' && $empStatus !== 'Active') {
                         $error = 'Your account is pending approval by your organization.';
                     } else {
@@ -642,7 +649,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <!-- Segmented Control Tabs -->
                 <div style="display: flex; gap: 4px; background: #f1f5f9; border-radius: 8px; padding: 4px; margin-bottom: 24px; border: 1px solid #e2e8f0;">
                     <button type="button" class="tab-btn active" id="tab-login" style="flex: 1; border: none; background: #ffffff; padding: 8px 12px; font-family: inherit; font-size: 13px; font-weight: 600; color: #0f172a; border-radius: 6px; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">User Login</button>
-                    <button type="button" class="tab-btn" id="tab-signup" style="flex: 1; border: none; background: transparent; padding: 8px 12px; font-family: inherit; font-size: 13px; font-weight: 600; color: #64748b; border-radius: 6px; cursor: pointer; transition: all 0.2s;">User Signup</button>
                     <button type="button" class="tab-btn" id="tab-admin" style="flex: 1; border: none; background: transparent; padding: 8px 12px; font-family: inherit; font-size: 13px; font-weight: 600; color: #64748b; border-radius: 6px; cursor: pointer; transition: all 0.2s;">Admin Login</button>
                 </div>
 
@@ -698,10 +704,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </form>
 
                 <div class="signup-block">
-                    Don't have an account? <a href="#" id="toggle-signup-btn">Sign up Now</a>
-                </div>
-                <div class="signup-block" style="margin-top: 8px;">
-                    Want to register your organization? <a href="register.php" style="color: var(--primary); font-weight: 600;">Register Company</a>
+                    Don't have an account? <a href="register.php" style="color: var(--primary); font-weight: 600;">Register Organization</a>
                 </div>
             </div>
 
@@ -760,27 +763,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // Form switcher functions
         function showSignUp() {
-            document.getElementById('auth-action').value = 'signup';
-            document.getElementById('group-name').style.display = 'block';
-            document.getElementById('name').required = true;
-            
-            document.getElementById('email').placeholder = 'Email Address';
-            
-            document.querySelector('.form-title-block h2').textContent = 'Sign up';
-            document.querySelector('.form-title-block p').textContent = 'Create a new account to get started.';
-            document.querySelector('.btn-signin').textContent = 'Sign Up';
-            
-            const signupBlock = document.querySelector('.signup-block');
-            if (signupBlock) {
-                signupBlock.style.display = 'block';
-                signupBlock.childNodes[0].textContent = 'Already have an account? ';
-            }
-            const toggleBtn = document.getElementById('toggle-signup-btn');
-            if (toggleBtn) toggleBtn.textContent = 'Sign in Now';
-            
-            document.querySelector('.demo-guide')?.style.setProperty('display', 'none');
-            
-            updateTabState('tab-signup');
+            window.location.href = 'register.php';
         }
 
         function showSignIn() {

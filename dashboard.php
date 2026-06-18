@@ -13,13 +13,39 @@ if (!$jwtPayload) {
     exit;
 }
 
+if (isset($_GET['switch_org_id']) && isset($jwtPayload['role']) && $jwtPayload['role'] === 'Super Admin') {
+    $newOrgId = (int)$_GET['switch_org_id'];
+    $jwtPayload['org_id'] = $newOrgId;
+    $newJwt = generate_jwt($jwtPayload);
+    setcookie('vyala_taskpad_jwt_token', $newJwt, time() + 86400, '/', '', false, true);
+    header("Location: dashboard.php");
+    exit;
+}
+
 $meId = $jwtPayload['id'];
 $meName = $jwtPayload['name'];
 
 require_once 'db.php';
 
+// Validate organization status for active session
+$meOrgId = (int)($jwtPayload['org_id'] ?? 0);
+if ($meOrgId > 0 && isset($jwtPayload['role']) && $jwtPayload['role'] !== 'Super Admin') {
+    try {
+        $stmtOrgCheck = $pdo->prepare("SELECT status FROM `organizations` WHERE id = ?");
+        $stmtOrgCheck->execute([$meOrgId]);
+        $orgStatus = $stmtOrgCheck->fetchColumn();
+        if ($orgStatus !== 'Active') {
+            // Destroy invalid session cookie
+            setcookie('vyala_taskpad_jwt_token', '', time() - 3600, '/');
+            header("Location: login.php?error=" . urlencode("Your organization is not yet approved by the administrator."));
+            exit;
+        }
+    } catch (PDOException $ex) {}
+}
+
 try {
     $isAdmin = ($jwtPayload['role'] === 'Admin');
+    $isOrgAdmin = ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Project Lead' || $jwtPayload['role'] === 'Super Admin');
     $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
 
     // =====================================================================
@@ -33,6 +59,9 @@ try {
             `name`       VARCHAR(255) NOT NULL,
             `slug`       VARCHAR(100) DEFAULT NULL,
             `status`     ENUM('Pending','Active','Rejected') NOT NULL DEFAULT 'Pending',
+            `phone`      VARCHAR(50) DEFAULT NULL,
+            `address`    TEXT DEFAULT NULL,
+            `details`    TEXT DEFAULT NULL,
             `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY `uniq_slug` (`slug`)
         ) ENGINE=InnoDB");
@@ -48,17 +77,27 @@ try {
 
     // 3. Alter tables to add columns safely without using unsupported IF NOT EXISTS syntax in ALTER TABLE
     $tablesToAlter = [
+        'organizations' => ['phone' => 'VARCHAR(50) DEFAULT NULL', 'address' => 'TEXT DEFAULT NULL', 'details' => 'TEXT DEFAULT NULL'],
         'employees' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'status' => "VARCHAR(50) NOT NULL DEFAULT 'Active'"],
-        'projects' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
-        'tasks' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
-        'documents' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'projects' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'fee_amount' => 'DECIMAL(15,2) DEFAULT 0.00'],
+        'tasks' => [
+            'org_id' => 'INT NOT NULL DEFAULT 1',
+            'estimated_duration' => 'INT DEFAULT 0',
+            'sequence_order' => 'INT DEFAULT 0',
+            'depends_on' => 'INT DEFAULT NULL',
+            'actual_start_date' => 'DATE DEFAULT NULL',
+            'actual_completion_date' => 'DATE DEFAULT NULL'
+        ],
+        'documents' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'encrypted' => "TINYINT(1) NOT NULL DEFAULT 0", 'enc_iv' => 'VARCHAR(255) DEFAULT NULL', 'original_name' => 'VARCHAR(255) DEFAULT NULL', 'mime_type' => 'VARCHAR(100) DEFAULT NULL'],
         'discussions' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
         'pin_notes' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
         'clients' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
         'activities' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
         'attendance' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
         'timesheets' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
-        'notifications' => ['org_id' => 'INT NOT NULL DEFAULT 1']
+        'notifications' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'goal_tracker' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'document_logs' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
     ];
 
     foreach ($tablesToAlter as $tbl => $cols) {
@@ -208,6 +247,12 @@ try {
         $pastDue = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND `status` != 'Completed' AND `due_date` < '$today'")->fetchColumn() ?: 0;
     }
 
+    // User task counts (for normal employees / dashboard metrics)
+    $user_assignedTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND org_id = $meOrgId")->fetchColumn() ?: 0;
+    $user_inProgressTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND org_id = $meOrgId AND status = 'In Progress'")->fetchColumn() ?: 0;
+    $user_completedTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND org_id = $meOrgId AND status = 'Completed'")->fetchColumn() ?: 0;
+    $user_pendingTasks = $pdo->query("SELECT COUNT(*) FROM `tasks` WHERE `assigned_to` = $meId AND org_id = $meOrgId AND status != 'Completed'")->fetchColumn() ?: 0;
+
     // RSK Approvals Dashboard Metrics
     $rsk_totalProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE org_id = $meOrgId")->fetchColumn() ?: 0;
     $rsk_pendingProjects = $pdo->query("SELECT COUNT(*) FROM `projects` WHERE status = 'Pending' AND org_id = $meOrgId")->fetchColumn() ?: 0;
@@ -245,6 +290,26 @@ try {
         $projectStatusCounts[$row['status']] = (int)$row['cnt'];
     }
     // -------------------------------------------
+
+    // --- GOAL TRACKER DATA ---
+    $today = date('Y-m-d');
+    try {
+        // Auto-update overdue goals
+        $pdo->prepare("UPDATE `goal_tracker` SET status = 'Overdue' WHERE org_id = ? AND target_date < ? AND status NOT IN ('Completed')")->execute([$meOrgId, $today]);
+        $goalsRaw = $pdo->prepare("SELECT * FROM `goal_tracker` WHERE org_id = ? ORDER BY target_date ASC");
+        $goalsRaw->execute([$meOrgId]);
+        $goalsList = $goalsRaw->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) { $goalsList = []; }
+    $goal_total     = count($goalsList);
+    $goal_completed = count(array_filter($goalsList, fn($g) => $g['status'] === 'Completed'));
+    $goal_overdue   = count(array_filter($goalsList, fn($g) => $g['status'] === 'Overdue'));
+    $goal_pending   = $goal_total - $goal_completed;
+    // -------------------------------------------
+
+    // Fetch recent notifications for dashboard card
+    $stmtNotif = $pdo->prepare("SELECT * FROM `notifications` WHERE org_id = ? ORDER BY id DESC LIMIT 5");
+    $stmtNotif->execute([$meOrgId]);
+    $recentNotifications = $stmtNotif->fetchAll(PDO::FETCH_ASSOC);
 
     // 2. Fetch Projects Lists
     $projects = $pdo->prepare("
@@ -488,13 +553,59 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vyala Software TaskPad ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â  Dashboard</title>
+    <title>Vyala Software TaskPad – Dashboard</title>
     <!-- CSS Stylesheet -->
     <link rel="stylesheet" href="style.css?v=2606151929">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         window.VYALA_USER_ROLE = "<?= $jwtPayload['role'] ?>";
+        window.VYALA_IS_ORG_ADMIN = <?= $isOrgAdmin ? 'true' : 'false' ?>;
     </script>
+    <style>
+    /* ======================== PRINT STYLES ======================== */
+    @media print {
+        /* Hide all nav/chrome */
+        .sidebar, .main-wrapper > header, header.app-header,
+        .tab-nav, .content-tabs, .sidebar-nav,
+        .btn, button, select, input[type="text"], input[type="date"],
+        .filter-dropdown-wrapper, .standard-search-wrapper,
+        .project-card-status-row select, .btn-delete-project,
+        #btn-export-report, .header-btn,
+        .app-container > aside,
+        [class*="header"], .rsk-panel-link,
+        .tab-view:not(#view-reports) { display: none !important; }
+
+        /* Reset layout for print */
+        body, html { margin: 0; padding: 0; background: #fff !important; }
+        .app-container { display: block !important; }
+        .main-wrapper { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+        .content-area { padding: 0 !important; }
+        #view-reports { display: block !important; padding: 12px !important; }
+
+        /* Report panel print styling */
+        #view-reports .section-card,
+        #view-reports .rsk-panel,
+        #view-reports table { box-shadow: none !important; border: 1px solid #ccc !important; }
+        #view-reports h2, #view-reports h3 { color: #000 !important; }
+        #view-reports table th { background: #eee !important; color: #000 !important; }
+        #view-reports table td { color: #333 !important; }
+        
+        /* Page breaks */
+        #view-reports .section-card { page-break-inside: avoid; margin-bottom: 16px; }
+        
+        /* Print header */
+        #view-reports::before {
+            content: "Vyala Software TaskPad – Report";
+            display: block;
+            font-size: 20px;
+            font-weight: 700;
+            text-align: center;
+            padding: 12px 0;
+            border-bottom: 2px solid #333;
+            margin-bottom: 16px;
+        }
+    }
+    </style>
 </head>
 <body>
 
@@ -519,7 +630,8 @@ try {
                     <style>
                         /* Custom RSK Dashboard Styles */
                         .rsk-grid-8 { display: grid; grid-template-columns: repeat(8, 1fr); gap: 12px; margin-bottom: 20px; }
-                        .rsk-card-sm { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 10px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+                        .rsk-card-sm { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 10px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.03); cursor: pointer; transition: all 0.2s ease; }
+                        .rsk-card-sm:hover { border-color: #2563eb; box-shadow: 0 4px 12px rgba(37,99,235,0.08); transform: translateY(-1px); }
                         .rsk-icon-sm { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
                         .rsk-card-title { font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 4px; line-height: 1.2; height: 26px; display: flex; align-items: center; text-transform: capitalize; }
                         .rsk-card-value { font-size: 20px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
@@ -527,7 +639,11 @@ try {
                         .rsk-card-link:hover { text-decoration: underline; }
 
                         .rsk-row-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 20px; }
+                        <?php if ($isOrgAdmin): ?>
                         .rsk-row-3 { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+                        <?php else: ?>
+                        .rsk-row-3 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; margin-bottom: 20px; }
+                        <?php endif; ?>
                         .rsk-row-4 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 20px; }
 
                         .rsk-panel { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); display: flex; flex-direction: column; }
@@ -566,50 +682,77 @@ try {
                             <div class="rsk-icon-sm" style="background:#eff6ff; color:#3b82f6;"><i data-lucide="folder"></i></div>
                             <div class="rsk-card-title">Total<br>Projects</div>
                             <div class="rsk-card-value"><?= $rsk_totalProjects ?></div>
-                            <a href="#projects" class="rsk-card-link tab-trigger" data-target="projects">View all projects &rarr;</a>
+                            <a href="#projects" class="rsk-card-link tab-trigger" data-target="projects" data-filter-status="All">View all projects &rarr;</a>
                         </div>
                         <div class="rsk-card-sm">
                             <div class="rsk-icon-sm" style="background:#fef3c7; color:#f59e0b;"><i data-lucide="hourglass"></i></div>
                             <div class="rsk-card-title">Pending<br>Projects</div>
                             <div class="rsk-card-value"><?= $rsk_pendingProjects ?></div>
-                            <a href="#projects" class="rsk-card-link tab-trigger" data-target="projects">View pending &rarr;</a>
+                            <a href="#projects" class="rsk-card-link tab-trigger" data-target="projects" data-filter-status="Pending">View pending &rarr;</a>
                         </div>
                         <div class="rsk-card-sm">
                             <div class="rsk-icon-sm" style="background:#dcfce7; color:#10b981;"><i data-lucide="check-circle-2"></i></div>
                             <div class="rsk-card-title">Approved<br>Projects</div>
                             <div class="rsk-card-value"><?= $rsk_approvedProjects ?></div>
-                            <a href="#projects" class="rsk-card-link tab-trigger" data-target="projects">View approved &rarr;</a>
+                            <a href="#projects" class="rsk-card-link tab-trigger" data-target="projects" data-filter-status="Active">View approved &rarr;</a>
                         </div>
                         <div class="rsk-card-sm">
                             <div class="rsk-icon-sm" style="background:#fee2e2; color:#ef4444;"><i data-lucide="x-circle"></i></div>
                             <div class="rsk-card-title">Rejected /<br>Query</div>
                             <div class="rsk-card-value"><?= $rsk_rejectedProjects ?></div>
-                            <a href="#projects" class="rsk-card-link tab-trigger" data-target="projects">View details &rarr;</a>
+                            <a href="#projects" class="rsk-card-link tab-trigger" data-target="projects" data-filter-status="Rejected">View details &rarr;</a>
                         </div>
+                        <?php if ($isOrgAdmin): ?>
                         <div class="rsk-card-sm">
                             <div class="rsk-icon-sm" style="background:#fce7f3; color:#ec4899;"><i data-lucide="users"></i></div>
                             <div class="rsk-card-title">Total<br>Employees</div>
                             <div class="rsk-card-value"><?= $rsk_totalEmployees ?></div>
-                            <a href="#settings" class="rsk-card-link">View employees &rarr;</a>
+                            <a href="#users" class="rsk-card-link tab-trigger" data-target="users">View employees &rarr;</a>
                         </div>
                         <div class="rsk-card-sm">
                             <div class="rsk-icon-sm" style="background:#e0e7ff; color:#6366f1;"><i data-lucide="check-square"></i></div>
                             <div class="rsk-card-title">Total<br>Tasks</div>
                             <div class="rsk-card-value"><?= $rsk_totalTasks ?></div>
-                            <a href="#dashboard" class="rsk-card-link">View tasks &rarr;</a>
+                            <a href="#tasks" class="rsk-card-link tab-trigger" data-target="tasks">View tasks &rarr;</a>
                         </div>
                         <div class="rsk-card-sm">
                             <div class="rsk-icon-sm" style="background:#f3e8ff; color:#8b5cf6;"><i data-lucide="users"></i></div>
                             <div class="rsk-card-title">Active<br>Clients</div>
                             <div class="rsk-card-value"><?= $rsk_activeClients ?></div>
-                            <a href="#dashboard" class="rsk-card-link">View clients &rarr;</a>
+                            <a href="#clients" class="rsk-card-link tab-trigger" data-target="clients">View clients &rarr;</a>
                         </div>
                         <div class="rsk-card-sm">
                             <div class="rsk-icon-sm" style="background:#cffafe; color:#06b6d4;"><i data-lucide="map"></i></div>
                             <div class="rsk-card-title">Survey Works<br>In Progress</div>
                             <div class="rsk-card-value"><?= $rsk_surveyWorks ?></div>
-                            <a href="#dashboard" class="rsk-card-link">View surveys &rarr;</a>
+                            <a href="#surveymanagement" class="rsk-card-link tab-trigger" data-target="surveymanagement">View surveys &rarr;</a>
                         </div>
+                        <?php else: ?>
+                        <div class="rsk-card-sm">
+                            <div class="rsk-icon-sm" style="background:#e0e7ff; color:#6366f1;"><i data-lucide="clipboard-list"></i></div>
+                            <div class="rsk-card-title">Assigned<br>Tasks</div>
+                            <div class="rsk-card-value"><?= $user_assignedTasks ?></div>
+                            <a href="#tasks" class="rsk-card-link tab-trigger" data-target="tasks">View tasks &rarr;</a>
+                        </div>
+                        <div class="rsk-card-sm">
+                            <div class="rsk-icon-sm" style="background:#fef3c7; color:#d97706;"><i data-lucide="play-circle"></i></div>
+                            <div class="rsk-card-title">In Progress<br>Tasks</div>
+                            <div class="rsk-card-value"><?= $user_inProgressTasks ?></div>
+                            <a href="#tasks" class="rsk-card-link tab-trigger" data-target="tasks" data-filter-status="In Progress">View active &rarr;</a>
+                        </div>
+                        <div class="rsk-card-sm">
+                            <div class="rsk-icon-sm" style="background:#dcfce7; color:#16a34a;"><i data-lucide="check-circle-2"></i></div>
+                            <div class="rsk-card-title">Completed<br>Tasks</div>
+                            <div class="rsk-card-value"><?= $user_completedTasks ?></div>
+                            <a href="#tasks" class="rsk-card-link tab-trigger" data-target="tasks" data-filter-status="Completed">View completed &rarr;</a>
+                        </div>
+                        <div class="rsk-card-sm">
+                            <div class="rsk-icon-sm" style="background:#fee2e2; color:#ef4444;"><i data-lucide="alert-circle"></i></div>
+                            <div class="rsk-card-title">Pending<br>Tasks</div>
+                            <div class="rsk-card-value"><?= $user_pendingTasks ?></div>
+                            <a href="#tasks" class="rsk-card-link tab-trigger" data-target="tasks" data-filter-status="Todo">View pending &rarr;</a>
+                        </div>
+                        <?php endif; ?>
                     </div>
 
                     <!-- Row 2: Pipeline & Service-wise -->
@@ -695,6 +838,254 @@ try {
                         </div>
                     </div>
 
+                    <!-- ===== GOAL TRACKER SECTION ===== -->
+                    <?php if ($isOrgAdmin): ?>
+                    <div style="margin-bottom: 18px;">
+                        <div class="rsk-panel" style="padding: 0;">
+                            <!-- Header -->
+                            <div style="display:flex; justify-content:space-between; align-items:center; padding: 16px 20px; border-bottom: 1px solid #e2e8f0;">
+                                <div style="display:flex; align-items:center; gap:10px;">
+                                    <div style="width:32px; height:32px; background:linear-gradient(135deg,#6366f1,#8b5cf6); border-radius:8px; display:flex; align-items:center; justify-content:center; color:#fff;">
+                                        <i data-lucide="target" style="width:16px;height:16px;"></i>
+                                    </div>
+                                    <div>
+                                        <div style="font-size:14px; font-weight:700; color:#0f172a;">Goal Tracker</div>
+                                        <div style="font-size:11px; color:#64748b;">Monthly organizational goals &amp; milestones</div>
+                                    </div>
+                                </div>
+                                <button onclick="openGoalModal()" style="display:flex; align-items:center; gap:6px; background:linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; border:none; border-radius:8px; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; transition:all 0.2s;">
+                                    <i data-lucide="plus" style="width:14px;height:14px;"></i> Add Goal
+                                </button>
+                            </div>
+                            <!-- Summary Stats -->
+                            <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:0; border-bottom:1px solid #e2e8f0;">
+                                <?php
+                                $goalStatCards = [
+                                    ['Total Goals', $goal_total, '#6366f1', '#eef2ff', 'target'],
+                                    ['Completed', $goal_completed, '#10b981', '#dcfce7', 'check-circle'],
+                                    ['Pending', $goal_pending, '#f59e0b', '#fef3c7', 'clock'],
+                                    ['Overdue', $goal_overdue, '#ef4444', '#fee2e2', 'alert-circle'],
+                                ];
+                                foreach($goalStatCards as $i => $gs):
+                                ?>
+                                <div style="padding:14px 16px; <?= $i > 0 ? 'border-left:1px solid #e2e8f0;' : '' ?> text-align:center;">
+                                    <div style="width:28px; height:28px; background:<?= $gs[3] ?>; border-radius:50%; display:flex; align-items:center; justify-content:center; margin:0 auto 6px; color:<?= $gs[2] ?>;">
+                                        <i data-lucide="<?= $gs[4] ?>" style="width:13px;height:13px;"></i>
+                                    </div>
+                                    <div style="font-size:20px; font-weight:800; color:<?= $gs[2] ?>;"><?= $gs[1] ?></div>
+                                    <div style="font-size:10px; color:#64748b; font-weight:600;"><?= $gs[0] ?></div>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                            <!-- Goals List -->
+                            <div style="padding:16px 20px; display:flex; flex-direction:column; gap:12px;">
+                                <?php if (empty($goalsList)): ?>
+                                <div style="text-align:center; padding:40px 20px; color:#94a3b8;">
+                                    <i data-lucide="target" style="width:40px;height:40px;margin-bottom:12px;color:#cbd5e1;display:block;margin-left:auto;margin-right:auto;"></i>
+                                    <div style="font-size:14px; font-weight:600; margin-bottom:4px;">No Goals Yet</div>
+                                    <div style="font-size:12px;">Click "Add Goal" to create your first monthly goal.</div>
+                                </div>
+                                <?php else: foreach($goalsList as $goal):
+                                    $gStart = new DateTime($goal['start_date']);
+                                    $gTarget = new DateTime($goal['target_date']);
+                                    $gNow = new DateTime($today);
+                                    $totalDays = max(1, (int)$gStart->diff($gTarget)->days);
+                                    $elapsedDays = (int)$gStart->diff($gNow)->days;
+                                    $timelinePos = min(100, max(0, round(($elapsedDays / $totalDays) * 100)));
+                                    $remainDays = (int)$gNow->diff($gTarget)->days;
+                                    $isPast = $gTarget < $gNow;
+                                    $statusColors = [
+                                        'Not Started' => ['bg'=>'#f1f5f9','text'=>'#475569','dot'=>'#94a3b8'],
+                                        'In Progress' => ['bg'=>'#dbeafe','text'=>'#1d4ed8','dot'=>'#3b82f6'],
+                                        'Completed'   => ['bg'=>'#dcfce7','text'=>'#15803d','dot'=>'#10b981'],
+                                        'Overdue'     => ['bg'=>'#fee2e2','text'=>'#dc2626','dot'=>'#ef4444'],
+                                    ];
+                                    $sc = $statusColors[$goal['status']] ?? $statusColors['Not Started'];
+                                    $barColor = $goal['status'] === 'Completed' ? '#10b981' : ($goal['status'] === 'Overdue' ? '#ef4444' : '#6366f1');
+                                ?>
+                                <div class="goal-card" style="border:1px solid #e2e8f0; border-radius:10px; padding:14px 16px; background:#fff; transition:all 0.2s;">
+                                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+                                        <div style="flex:1; min-width:0;">
+                                            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                                <span style="font-size:13px; font-weight:700; color:#0f172a;"><?= htmlspecialchars($goal['title']) ?></span>
+                                                <span style="background:<?= $sc['bg'] ?>; color:<?= $sc['text'] ?>; font-size:10px; font-weight:700; padding:2px 8px; border-radius:99px; display:inline-flex; align-items:center; gap:4px;">
+                                                    <span style="width:5px;height:5px;border-radius:50%;background:<?= $sc['dot'] ?>;"></span>
+                                                    <?= htmlspecialchars($goal['status']) ?>
+                                                </span>
+                                            </div>
+                                            <?php if (!empty($goal['description'])): ?>
+                                            <div style="font-size:11px; color:#64748b; margin-top:3px;"><?= htmlspecialchars(substr($goal['description'], 0, 100)) ?><?= strlen($goal['description']) > 100 ? '…' : '' ?></div>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div style="display:flex; gap:6px; margin-left:10px; flex-shrink:0;">
+                                            <?php if ($goal['status'] !== 'Completed'): ?>
+                                            <button onclick="markGoalComplete(<?= $goal['id'] ?>)" style="font-size:10px; font-weight:600; padding:4px 10px; background:#dcfce7; color:#15803d; border:1px solid #bbf7d0; border-radius:6px; cursor:pointer; font-family:inherit;">✓ Done</button>
+                                            <?php endif; ?>
+                                            <button onclick="deleteGoal(<?= $goal['id'] ?>)" style="font-size:10px; padding:4px 8px; background:#fee2e2; color:#dc2626; border:1px solid #fecaca; border-radius:6px; cursor:pointer;">🗑</button>
+                                        </div>
+                                    </div>
+                                    <!-- Timeline Bar -->
+                                    <div style="margin-bottom:6px;">
+                                        <div style="display:flex; justify-content:space-between; font-size:10px; color:#64748b; margin-bottom:4px;">
+                                            <span>📅 Start: <?= date('d M Y', strtotime($goal['start_date'])) ?></span>
+                                            <span style="font-weight:600; color:<?= $goal['status'] === 'Completed' ? '#10b981' : ($isPast ? '#ef4444' : '#6366f1') ?>;">
+                                                <?= $goal['status'] === 'Completed' ? '✓ Completed' : ($isPast ? 'Overdue by ' . $remainDays . ' day' . ($remainDays != 1 ? 's' : '') : $remainDays . ' day' . ($remainDays != 1 ? 's' : '') . ' remaining') ?>
+                                            </span>
+                                            <span>🎯 Target: <?= date('d M Y', strtotime($goal['target_date'])) ?></span>
+                                        </div>
+                                        <div style="position:relative; height:8px; background:#f1f5f9; border-radius:99px; overflow:hidden;">
+                                            <div style="height:100%; width:<?= $goal['progress'] ?>%; background:<?= $barColor ?>; border-radius:99px; transition:width 0.5s ease;"></div>
+                                            <!-- Today marker -->
+                                            <?php if ($goal['status'] !== 'Completed' && $timelinePos > 0 && $timelinePos < 100): ?>
+                                            <div style="position:absolute; top:0; left:<?= $timelinePos ?>%; transform:translateX(-50%); height:100%; width:2px; background:#0f172a; opacity:0.5;"></div>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div style="display:flex; justify-content:space-between; font-size:10px; color:#94a3b8; margin-top:3px;">
+                                            <span>Progress: <?= $goal['progress'] ?>%</span>
+                                            <?php if ($goal['status'] !== 'Completed'): ?>
+                                            <span>Today marker at <?= $timelinePos ?>% of timeline</span>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <!-- Progress Update Slider (for In Progress goals) -->
+                                    <?php if ($goal['status'] === 'In Progress' || $goal['status'] === 'Not Started'): ?>
+                                    <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                        <span style="font-size:10px; color:#64748b; white-space:nowrap;">Update %:</span>
+                                        <input type="range" min="0" max="100" value="<?= $goal['progress'] ?>" 
+                                               class="goal-progress-slider" data-goal-id="<?= $goal['id'] ?>"
+                                               style="flex:1; height:4px; accent-color:#6366f1; cursor:pointer;">
+                                        <span class="goal-progress-display" style="font-size:11px; font-weight:700; color:#6366f1; min-width:30px;"><?= $goal['progress'] ?>%</span>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                                <?php endforeach; endif; ?>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ===== ADD GOAL MODAL ===== -->
+                    <div id="goalModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+                        <div style="background:#fff; border-radius:14px; width:90%; max-width:520px; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                            <div style="display:flex; justify-content:space-between; align-items:center; padding:20px 24px; border-bottom:1px solid #e2e8f0;">
+                                <h3 style="margin:0; font-size:16px; font-weight:700; color:#0f172a;">🎯 Add New Goal</h3>
+                                <button onclick="closeGoalModal()" style="border:none; background:none; cursor:pointer; font-size:22px; color:#64748b; line-height:1;">&times;</button>
+                            </div>
+                            <div style="padding:24px;">
+                                <div style="margin-bottom:14px;">
+                                    <label style="display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:5px;">Goal Title *</label>
+                                    <input type="text" id="goalTitle" placeholder="e.g. Complete Q1 client approvals" class="form-control" style="width:100%;">
+                                </div>
+                                <div style="margin-bottom:14px;">
+                                    <label style="display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:5px;">Description</label>
+                                    <textarea id="goalDesc" placeholder="Describe the goal..." class="form-control" rows="2" style="width:100%; resize:vertical;"></textarea>
+                                </div>
+                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
+                                    <div>
+                                        <label style="display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:5px;">Start Date *</label>
+                                        <input type="date" id="goalStartDate" class="form-control" style="width:100%;" value="<?= date('Y-m-d') ?>">
+                                    </div>
+                                    <div>
+                                        <label style="display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:5px;">Target Date *</label>
+                                        <input type="date" id="goalTargetDate" class="form-control" style="width:100%;">
+                                    </div>
+                                </div>
+                                <div style="margin-bottom:20px;">
+                                    <label style="display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:5px;">Initial Status</label>
+                                    <select id="goalStatus" class="form-control" style="width:100%;">
+                                        <option value="Not Started">Not Started</option>
+                                        <option value="In Progress">In Progress</option>
+                                    </select>
+                                </div>
+                                <div style="display:flex; gap:10px; justify-content:flex-end;">
+                                    <button onclick="closeGoalModal()" style="padding:9px 18px; background:#f1f5f9; color:#475569; border:1px solid #e2e8f0; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; font-family:inherit;">Cancel</button>
+                                    <button onclick="saveGoal()" style="padding:9px 18px; background:linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; border:none; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; font-family:inherit;">Save Goal</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <script>
+                    function openGoalModal() {
+                        document.getElementById('goalModal').style.display = 'flex';
+                    }
+                    function closeGoalModal() {
+                        document.getElementById('goalModal').style.display = 'none';
+                        document.getElementById('goalTitle').value = '';
+                        document.getElementById('goalDesc').value = '';
+                        document.getElementById('goalTargetDate').value = '';
+                    }
+                    function saveGoal() {
+                        const title = document.getElementById('goalTitle').value.trim();
+                        const desc = document.getElementById('goalDesc').value.trim();
+                        const startDate = document.getElementById('goalStartDate').value;
+                        const targetDate = document.getElementById('goalTargetDate').value;
+                        const status = document.getElementById('goalStatus').value;
+                        if (!title || !startDate || !targetDate) { alert('Title, Start Date and Target Date are required.'); return; }
+                        if (targetDate <= startDate) { alert('Target date must be after start date.'); return; }
+                        const fd = new FormData();
+                        fd.append('action', 'create_goal');
+                        fd.append('title', title);
+                        fd.append('description', desc);
+                        fd.append('start_date', startDate);
+                        fd.append('target_date', targetDate);
+                        fd.append('status', status);
+                        fetch('api.php', { method: 'POST', body: fd })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) { closeGoalModal(); window.location.reload(); }
+                                else { alert(data.message || 'Failed to save goal.'); }
+                            });
+                    }
+                    function markGoalComplete(goalId) {
+                        if (!confirm('Mark this goal as completed?')) return;
+                        const fd = new FormData();
+                        fd.append('action', 'mark_goal_complete');
+                        fd.append('goal_id', goalId);
+                        fetch('api.php', { method: 'POST', body: fd })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) window.location.reload();
+                                else alert(data.message || 'Failed.');
+                            });
+                    }
+                    function deleteGoal(goalId) {
+                        if (!confirm('Delete this goal permanently?')) return;
+                        const fd = new FormData();
+                        fd.append('action', 'delete_goal');
+                        fd.append('goal_id', goalId);
+                        fetch('api.php', { method: 'POST', body: fd })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) window.location.reload();
+                                else alert(data.message || 'Failed.');
+                            });
+                    }
+                    // Goal progress slider
+                    document.addEventListener('DOMContentLoaded', function() {
+                        document.querySelectorAll('.goal-progress-slider').forEach(function(slider) {
+                            const display = slider.nextElementSibling;
+                            slider.addEventListener('input', function() {
+                                display.textContent = this.value + '%';
+                            });
+                            let timer;
+                            slider.addEventListener('change', function() {
+                                clearTimeout(timer);
+                                const goalId = this.dataset.goalId;
+                                const progress = this.value;
+                                timer = setTimeout(function() {
+                                    const fd = new FormData();
+                                    fd.append('action', 'update_goal_progress');
+                                    fd.append('goal_id', goalId);
+                                    fd.append('progress', progress);
+                                    fetch('api.php', { method: 'POST', body: fd })
+                                        .then(r => r.json())
+                                        .then(data => { if (!data.success) alert('Failed to update progress.'); });
+                                }, 600);
+                            });
+                        });
+                    });
+                    </script>
+                    <?php endif; ?>
+
                     <!-- Row 3: Recent, NOC, Notifications -->
                     <div class="rsk-row-3">
                         <div class="rsk-panel">
@@ -737,6 +1128,7 @@ try {
                             </table>
                         </div>
 
+                        <?php if ($isOrgAdmin): ?>
                         <div class="rsk-panel">
                             <div class="rsk-panel-title">
                                 <span>NOC Tracking</span>
@@ -766,53 +1158,41 @@ try {
                             </div>
                             <div style="font-size: 9px; color: #94a3b8; text-align: center; margin-top: 10px;">* Multiple NOCs may be applicable for a project</div>
                         </div>
+                        <?php endif; ?>
 
                         <div class="rsk-panel">
                             <div class="rsk-panel-title">
                                 <span>Notifications</span>
-                                <a href="#" class="rsk-panel-link">View All &rarr;</a>
+                                <a href="#" class="rsk-panel-link" id="btn-view-all-notifications">View All &rarr;</a>
                             </div>
                             <div style="display:flex; flex-direction:column; gap:16px;">
-                                <div style="display:flex; align-items:flex-start; gap:10px;">
-                                    <div style="width:24px; height:24px; background:#fff1f2; color:#ef4444; border-radius:50%; display:flex; align-items:center; justify-content:center;"><i data-lucide="file-x" style="width:12px; height:12px;"></i></div>
-                                    <div style="flex:1;">
-                                        <div style="font-size:11px; font-weight:700; color:#0f172a; margin-bottom:2px;">Missing Documents</div>
-                                        <div style="font-size:10px; color:#64748b;">3 projects have missing documents</div>
+                                <?php if (empty($recentNotifications)): ?>
+                                    <div style="text-align:center; padding: 20px; color:#64748b; font-size:11px;">
+                                        <i data-lucide="bell-off" style="width:24px; height:24px; margin-bottom:8px; color:#94a3b8; display:inline-block;"></i>
+                                        <div>No new notifications</div>
                                     </div>
-                                    <div style="font-size:9px; color:#94a3b8;">10 min ago</div>
-                                </div>
-                                <div style="display:flex; align-items:flex-start; gap:10px;">
-                                    <div style="width:24px; height:24px; background:#fef2f2; color:#ef4444; border-radius:50%; display:flex; align-items:center; justify-content:center;"><i data-lucide="help-circle" style="width:12px; height:12px;"></i></div>
-                                    <div style="flex:1;">
-                                        <div style="font-size:11px; font-weight:700; color:#0f172a; margin-bottom:2px;">Approval Queries Raised</div>
-                                        <div style="font-size:10px; color:#64748b;">5 projects have queries from department</div>
-                                    </div>
-                                    <div style="font-size:9px; color:#94a3b8;">1 hour ago</div>
-                                </div>
-                                <div style="display:flex; align-items:flex-start; gap:10px;">
-                                    <div style="width:24px; height:24px; background:#fef3c7; color:#f59e0b; border-radius:50%; display:flex; align-items:center; justify-content:center;"><i data-lucide="indian-rupee" style="width:12px; height:12px;"></i></div>
-                                    <div style="flex:1;">
-                                        <div style="font-size:11px; font-weight:700; color:#0f172a; margin-bottom:2px;">Payment Due</div>
-                                        <div style="font-size:10px; color:#64748b;">8 payments are overdue</div>
-                                    </div>
-                                    <div style="font-size:9px; color:#94a3b8;">2 hours ago</div>
-                                </div>
-                                <div style="display:flex; align-items:flex-start; gap:10px;">
-                                    <div style="width:24px; height:24px; background:#dcfce7; color:#10b981; border-radius:50%; display:flex; align-items:center; justify-content:center;"><i data-lucide="check" style="width:12px; height:12px;"></i></div>
-                                    <div style="flex:1;">
-                                        <div style="font-size:11px; font-weight:700; color:#0f172a; margin-bottom:2px;">Approval Received</div>
-                                        <div style="font-size:10px; color:#64748b;">2 projects have been approved</div>
-                                    </div>
-                                    <div style="font-size:9px; color:#94a3b8;">3 hours ago</div>
-                                </div>
-                                <div style="display:flex; align-items:flex-start; gap:10px;">
-                                    <div style="width:24px; height:24px; background:#eff6ff; color:#3b82f6; border-radius:50%; display:flex; align-items:center; justify-content:center;"><i data-lucide="calendar" style="width:12px; height:12px;"></i></div>
-                                    <div style="flex:1;">
-                                        <div style="font-size:11px; font-weight:700; color:#0f172a; margin-bottom:2px;">Site Visit Scheduled</div>
-                                        <div style="font-size:10px; color:#64748b;">4 survey site visits scheduled this week</div>
-                                    </div>
-                                    <div style="font-size:9px; color:#94a3b8;">5 hours ago</div>
-                                </div>
+                                <?php else: ?>
+                                    <?php foreach ($recentNotifications as $n): 
+                                        $cat = $n['category'];
+                                        $bg = '#eff6ff'; $color = '#3b82f6'; $icon = 'info';
+                                        if ($cat === 'success') {
+                                            $bg = '#dcfce7'; $color = '#10b981'; $icon = 'check';
+                                        } else if ($cat === 'warning') {
+                                            $bg = '#fef3c7'; $color = '#f59e0b'; $icon = 'alert-triangle';
+                                        } else if ($cat === 'danger') {
+                                            $bg = '#fee2e2'; $color = '#ef4444'; $icon = 'alert-circle';
+                                        }
+                                        $timeStr = time_elapsed_string($n['created_at']);
+                                    ?>
+                                        <div style="display:flex; align-items:flex-start; gap:10px;">
+                                            <div style="width:24px; height:24px; background:<?= $bg ?>; color:<?= $color ?>; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i data-lucide="<?= $icon ?>" style="width:12px; height:12px;"></i></div>
+                                            <div style="flex:1;">
+                                                <div style="font-size:11px; font-weight:600; color:#0f172a; line-height: 1.3;"><?= htmlspecialchars($n['message']) ?></div>
+                                            </div>
+                                            <div style="font-size:9px; color:#94a3b8; white-space:nowrap;"><?= $timeStr ?></div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
                             </div>
                         </div>
                     </div>
@@ -850,7 +1230,7 @@ try {
                         <div class="rsk-panel">
                             <div class="rsk-panel-title">
                                 <span>Top Services by Task Volume</span>
-                                <a href="#" class="rsk-panel-link">View Report &rarr;</a>
+                                <a href="#reports" class="rsk-panel-link tab-trigger" data-target="reports">View Report &rarr;</a>
                             </div>
                             <div style="height: 180px;">
                                 <canvas id="servicesChart"></canvas>
@@ -862,14 +1242,14 @@ try {
                                 <span>Quick Actions</span>
                             </div>
                             <div class="rsk-qa-grid" style="height: 180px; align-content: center;">
-                                <div class="rsk-qa-btn"><div class="rsk-qa-icon" style="color:#3b82f6;"><i data-lucide="plus-circle"></i></div><div class="rsk-qa-text">New Project</div></div>
-                                <div class="rsk-qa-btn"><div class="rsk-qa-icon" style="color:#10b981;"><i data-lucide="user-plus"></i></div><div class="rsk-qa-text">Add Client</div></div>
-                                <div class="rsk-qa-btn"><div class="rsk-qa-icon" style="color:#f59e0b;"><i data-lucide="map"></i></div><div class="rsk-qa-text">New Survey</div></div>
-                                <div class="rsk-qa-btn"><div class="rsk-qa-icon" style="color:#a855f7;"><i data-lucide="upload-cloud"></i></div><div class="rsk-qa-text">Upload Document</div></div>
-                                <div class="rsk-qa-btn"><div class="rsk-qa-icon" style="color:#22c55e;"><i data-lucide="check-shield"></i></div><div class="rsk-qa-text">NOC Tracker</div></div>
-                                <div class="rsk-qa-btn"><div class="rsk-qa-icon" style="color:#ec4899;"><i data-lucide="credit-card"></i></div><div class="rsk-qa-text">Payment Entry</div></div>
-                                <div class="rsk-qa-btn"><div class="rsk-qa-icon" style="color:#3b82f6;"><i data-lucide="clipboard-list"></i></div><div class="rsk-qa-text">Task Manager</div></div>
-                                <div class="rsk-qa-btn"><div class="rsk-qa-icon" style="color:#f97316;"><i data-lucide="bar-chart-2"></i></div><div class="rsk-qa-text">Reports</div></div>
+                                <div class="rsk-qa-btn" data-action="new-project"><div class="rsk-qa-icon" style="color:#3b82f6;"><i data-lucide="plus-circle"></i></div><div class="rsk-qa-text">New Project</div></div>
+                                <div class="rsk-qa-btn" data-action="add-client"><div class="rsk-qa-icon" style="color:#10b981;"><i data-lucide="user-plus"></i></div><div class="rsk-qa-text">Add Client</div></div>
+                                <div class="rsk-qa-btn" data-action="new-survey"><div class="rsk-qa-icon" style="color:#f59e0b;"><i data-lucide="map"></i></div><div class="rsk-qa-text">New Survey</div></div>
+                                <div class="rsk-qa-btn" data-action="upload-document"><div class="rsk-qa-icon" style="color:#a855f7;"><i data-lucide="upload-cloud"></i></div><div class="rsk-qa-text">Upload Document</div></div>
+                                <div class="rsk-qa-btn" data-action="noc-tracker"><div class="rsk-qa-icon" style="color:#22c55e;"><i data-lucide="check-shield"></i></div><div class="rsk-qa-text">NOC Tracker</div></div>
+                                <div class="rsk-qa-btn" data-action="payment-entry"><div class="rsk-qa-icon" style="color:#ec4899;"><i data-lucide="credit-card"></i></div><div class="rsk-qa-text">Payment Entry</div></div>
+                                <div class="rsk-qa-btn" data-action="task-manager"><div class="rsk-qa-icon" style="color:#3b82f6;"><i data-lucide="clipboard-list"></i></div><div class="rsk-qa-text">Task Manager</div></div>
+                                <div class="rsk-qa-btn" data-action="reports"><div class="rsk-qa-icon" style="color:#f97316;"><i data-lucide="bar-chart-2"></i></div><div class="rsk-qa-text">Reports</div></div>
                             </div>
                         </div>
                     </div>
@@ -877,21 +1257,24 @@ try {
                     <script>
                     document.addEventListener('DOMContentLoaded', function() {
                         setTimeout(() => {
-                            // Service-wise donut (replaces NOC)
-                            var svcData = <?= json_encode(array_map(fn($sn) => $serviceCounts[$sn]['total'] ?? 0, ['Layout','Building','Single Plot','UAL','Land Survey'])) ?>;
-                            new Chart(document.getElementById('nocChart').getContext('2d'), {
-                                type: 'doughnut',
-                                data: {
-                                    labels: ['Layout','Building','Single Plot','UAL','Land Survey'],
-                                    datasets: [{
-                                        data: svcData,
-                                        backgroundColor: ['#3b82f6','#f59e0b','#eab308','#10b981','#a855f7'],
-                                        borderWidth: 0,
-                                        cutout: '75%'
-                                    }]
-                                },
-                                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: true } } }
-                            });
+                            // Service-wise doughnut (replaces NOC)
+                            var nocCanvas = document.getElementById('nocChart');
+                            if (nocCanvas) {
+                                var svcData = <?= json_encode(array_map(fn($sn) => $serviceCounts[$sn]['total'] ?? 0, ['Layout','Building','Single Plot','UAL','Land Survey'])) ?>;
+                                new Chart(nocCanvas.getContext('2d'), {
+                                    type: 'doughnut',
+                                    data: {
+                                        labels: ['Layout','Building','Single Plot','UAL','Land Survey'],
+                                        datasets: [{
+                                            data: svcData,
+                                            backgroundColor: ['#3b82f6','#f59e0b','#eab308','#10b981','#a855f7'],
+                                            borderWidth: 0,
+                                            cutout: '75%'
+                                        }]
+                                    },
+                                    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { enabled: true } } }
+                                });
+                            }
 
                             // Status Chart – fully dynamic
                             new Chart(document.getElementById('statusChart').getContext('2d'), {
@@ -1039,45 +1422,96 @@ try {
                         <h2 style="font-size: 20px; font-weight: 700; color: #0f172a; margin: 0;">Layout Generation</h2>
                     </div>
 
-                    <div class="section-card" style="padding: 24px;">
-                        <h3 style="margin-bottom: 20px; font-size: 16px; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">Create Task Sequence</h3>
-                        
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 20px;">
-                            <div class="form-group">
-                                <label class="form-label" for="layout-project">Select Project</label>
-                                <select class="form-control" id="layout-project">
+                    <!-- Two-column top row: Create new | Load existing -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; align-items: start;">
+
+                        <!-- Create New Sequence -->
+                        <div class="section-card" style="padding: 24px;">
+                            <h3 style="margin-bottom: 20px; font-size: 15px; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+                                <i data-lucide="plus-circle" style="width:15px;height:15px;vertical-align:middle;margin-right:5px;color:#3b82f6;"></i> Create Task Sequence
+                            </h3>
+                            
+                            <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px;">
+                                <div class="form-group" style="margin-bottom:0;">
+                                    <label class="form-label" for="layout-project">Select Project</label>
+                                    <select class="form-control" id="layout-project">
+                                        <option value="">-- Choose Project --</option>
+                                        <?php foreach ($dropdownProjects as $p): ?>
+                                            <option value="<?= $p['id'] ?>"><?= htmlspecialchars($p['name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                                    <div class="form-group" style="margin-bottom:0;">
+                                        <label class="form-label" for="layout-start-date">Start Date</label>
+                                        <input type="date" class="form-control" id="layout-start-date">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom:0;">
+                                        <label class="form-label" for="layout-target-date">Target Date</label>
+                                        <input type="date" class="form-control" id="layout-target-date">
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 12px; align-items: flex-end;">
+                                    <div class="form-group" style="margin-bottom: 0; flex:1;">
+                                        <label class="form-label" for="layout-num-tasks">Number of Tasks</label>
+                                        <input type="number" class="form-control" id="layout-num-tasks" min="1" max="50" value="5">
+                                    </div>
+                                    <button class="btn btn-secondary" id="btn-generate-sequence" style="height: 38px; white-space:nowrap;">Generate Inputs</button>
+                                </div>
+                            </div>
+
+                            <div id="layout-sequence-container" style="display: none;">
+                                <h4 style="margin-bottom: 12px; font-size: 13px; color: #475569; font-weight:600;">Task Sequence Definition</h4>
+                                <div id="layout-tasks-wrapper" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;">
+                                    <!-- Dynamic rows go here -->
+                                </div>
+                                <div style="text-align: right; border-top: 1px solid #e2e8f0; padding-top: 12px;">
+                                    <button class="btn btn-primary" id="btn-save-layout" style="padding: 8px 24px;">
+                                        <i data-lucide="zap" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;"></i>Save &amp; Generate Timeline
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Load Existing Timeline -->
+                        <div class="section-card" style="padding: 24px;">
+                            <h3 style="margin-bottom: 20px; font-size: 15px; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+                                <i data-lucide="bar-chart-horizontal" style="width:15px;height:15px;vertical-align:middle;margin-right:5px;color:#10b981;"></i> View Project Timeline
+                            </h3>
+                            <div class="form-group" style="margin-bottom: 14px;">
+                                <label class="form-label" for="timeline-load-project">Select Project to View</label>
+                                <select class="form-control" id="timeline-load-project">
                                     <option value="">-- Choose Project --</option>
                                     <?php foreach ($dropdownProjects as $p): ?>
                                         <option value="<?= $p['id'] ?>"><?= htmlspecialchars($p['name']) ?></option>
                                     <?php endforeach; ?>
                                 </select>
                             </div>
-                            <div class="form-group">
-                                <label class="form-label" for="layout-start-date">Expected Start Date</label>
-                                <input type="date" class="form-control" id="layout-start-date">
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label" for="layout-target-date">Target Date (Overall)</label>
-                                <input type="date" class="form-control" id="layout-target-date">
-                            </div>
+                            <button class="btn btn-secondary" id="btn-load-timeline" style="width:100%; background: linear-gradient(135deg,#1e3a5f,#2563eb); color:#fff; border:none;">
+                                <i data-lucide="calendar-days" style="width:14px;height:14px;vertical-align:middle;margin-right:5px;"></i>Load Timeline
+                            </button>
+                            <p id="timeline-load-hint" style="margin-top:10px; font-size:11px; color:#94a3b8; text-align:center;">Select a project and click Load Timeline to view its Gantt chart.</p>
                         </div>
+                    </div>
 
-                        <div style="display: flex; gap: 16px; align-items: flex-end; margin-bottom: 30px;">
-                            <div class="form-group" style="margin-bottom: 0;">
-                                <label class="form-label" for="layout-num-tasks">Number of Sequential Tasks</label>
-                                <input type="number" class="form-control" id="layout-num-tasks" min="1" max="50" value="5" style="width: 200px;">
+                    <!-- Timeline Display Area -->
+                    <div id="layout-timeline-area" style="display:none;">
+                        <div class="section-card" style="padding: 24px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+                                <div>
+                                    <h3 id="tl-project-title" style="margin:0; font-size:16px; font-weight:700; color:#0f172a;"></h3>
+                                    <p id="tl-project-meta" style="margin:4px 0 0; font-size:12px; color:#64748b;"></p>
+                                </div>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <span style="font-size:11px; color:#475569; font-weight:500;">GANTT TIMELINE</span>
+                                    <div style="display:flex; gap:6px;">
+                                        <span style="background:#dbeafe;color:#1d4ed8;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600;">Todo</span>
+                                        <span style="background:#fef9c3;color:#a16207;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600;">In Progress</span>
+                                        <span style="background:#dcfce7;color:#15803d;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600;">Completed</span>
+                                    </div>
+                                </div>
                             </div>
-                            <button class="btn btn-secondary" id="btn-generate-sequence" style="height: 38px; background: #e2e8f0; color: #0f172a;">Generate Inputs</button>
-                        </div>
-
-                        <div id="layout-sequence-container" style="display: none;">
-                            <h4 style="margin-bottom: 15px; font-size: 14px; color: #475569;">Task Sequence Definition</h4>
-                            <div id="layout-tasks-wrapper" style="display: flex; flex-direction: column; gap: 15px; margin-bottom: 20px;">
-                                <!-- Dynamic rows go here -->
-                            </div>
-                            <div style="text-align: right; border-top: 1px solid #e2e8f0; padding-top: 15px;">
-                                <button class="btn btn-primary" id="btn-save-layout" style="padding: 8px 24px;">Save & Generate Timeline</button>
-                            </div>
+                            <div id="layout-gantt-chart" style="overflow-x:auto; min-height:120px;"></div>
                         </div>
                     </div>
                 </div>
@@ -1238,7 +1672,10 @@ try {
                                                 <div style="flex: 1; text-align: left; font-size: 12.5px;"><?= date('d M Y', strtotime($t['created_at'])) ?></div>
                                                 <div style="flex: 1; text-align: left; font-size: 12.5px;"><?= $t['due_date'] ? date('d M Y', strtotime($t['due_date'])) : 'N/A' ?></div>
                                                 <div style="flex: 1; text-align: left;"><span class="priority-tag <?= $pri ?>"><?= $t['priority'] ?></span></div>
-                                                <div style="flex: 1; text-align: left;"><span class="status-badge <?= $badge ?>"><?= $t['status'] ?></span></div>
+                                                <div style="flex: 1; text-align: left; display: flex; align-items: center; justify-content: space-between;">
+                                                    <span class="status-badge <?= $badge ?>"><?= $t['status'] ?></span>
+                                                    <button class="btn-icon btn-edit-task" data-id="<?= $t['id'] ?>" data-title="<?= htmlspecialchars($t['title'], ENT_QUOTES) ?>" data-due="<?= $t['due_date'] ?>" data-days="<?= $t['estimated_duration'] ?>" style="background:none; border:none; cursor:pointer; padding:4px;" title="Edit Task"><i data-lucide="edit-2" style="width:12px; height:12px; color:#64748b;"></i></button>
+                                                </div>
                                             </div>
                                         <?php endforeach; ?>
                                     <?php endif; ?>
@@ -1296,6 +1733,8 @@ try {
                                         <a href="#" class="filter-project-status-item" data-status="All">All Statuses</a>
                                         <a href="#" class="filter-project-status-item" data-status="Active">Active</a>
                                         <a href="#" class="filter-project-status-item" data-status="Completed">Completed</a>
+                                        <a href="#" class="filter-project-status-item" data-status="Pending">Pending</a>
+                                        <a href="#" class="filter-project-status-item" data-status="Rejected">Rejected</a>
                                         <a href="#" class="filter-project-status-item" data-status="On Hold">On Hold</a>
                                     </div>
                                 </div>
@@ -1350,14 +1789,26 @@ try {
                             $updated_text = "Last updated: 1 day ago";
                             if ($p['id'] % 3 == 0) $updated_text = "Last updated: 3 days ago";
                             else if ($p['id'] % 2 == 0) $updated_text = "Last updated: 2 days ago";
-                        ?>
-                            <div class="project-grid-card" data-project-name="<?= htmlspecialchars(strtolower($p['name'])) ?>" data-status="<?= htmlspecialchars($p['status']) ?>" data-priority="<?= htmlspecialchars($p['priority']) ?>" data-created-at="<?= htmlspecialchars($p['created_at']) ?>" data-completion-rate="<?= $pct ?>" data-created-by="<?= htmlspecialchars($p['created_by'] ?? '') ?>" data-assigned-to="<?= htmlspecialchars($p['assigned_to'] ?? '') ?>" data-team-member-ids="<?= htmlspecialchars($p['member_ids'] ?? '') ?>">
+                        ?>                            <div class="project-grid-card" data-id="<?= $p['id'] ?>" data-project-name="<?= htmlspecialchars(strtolower($p['name'])) ?>" data-status="<?= htmlspecialchars($p['status']) ?>" data-priority="<?= htmlspecialchars($p['priority']) ?>" data-created-at="<?= htmlspecialchars($p['created_at']) ?>" data-completion-rate="<?= $pct ?>" data-created-by="<?= htmlspecialchars($p['created_by'] ?? '') ?>" data-assigned-to="<?= htmlspecialchars($p['assigned_to'] ?? '') ?>" data-team-member-ids="<?= htmlspecialchars($p['member_ids'] ?? '') ?>">
                                 <div class="project-card-header">
-                                    <div class="project-card-status-row">
+                                    <div class="project-card-status-row" style="display:flex; align-items:center; gap:6px;">
                                         <div class="project-card-check-circle <?= $isCompleted ? 'completed' : '' ?>">
                                             <i data-lucide="<?= $isCompleted ? 'check-circle' : 'circle' ?>" style="width: 18px; height: 18px;"></i>
                                         </div>
-                                        <span class="status-badge <?= $isCompleted ? 'completed' : 'process' ?>" style="font-size: 10.5px; padding: 2px 8px;"><?= htmlspecialchars($p['status']) ?></span>
+                                        <?php if ($isOrgAdmin): ?>
+                                            <select class="project-status-select" data-id="<?= $p['id'] ?>" style="font-size: 10.5px; padding: 2px 4px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; cursor: pointer; color:#475569; font-weight:600; outline:none;">
+                                                <option value="Active" <?= $p['status'] === 'Active' ? 'selected' : '' ?>>Active (Approved)</option>
+                                                <option value="Pending" <?= $p['status'] === 'Pending' ? 'selected' : '' ?>>Pending</option>
+                                                <option value="Completed" <?= $p['status'] === 'Completed' ? 'selected' : '' ?>>Completed</option>
+                                                <option value="Rejected" <?= $p['status'] === 'Rejected' ? 'selected' : '' ?>>Rejected</option>
+                                                <option value="On Hold" <?= $p['status'] === 'On Hold' ? 'selected' : '' ?>>On Hold</option>
+                                            </select>
+                                            <button class="btn-delete-project" data-id="<?= $p['id'] ?>" style="background:none; border:none; color:#ef4444; cursor:pointer; padding: 2px; margin-left: 2px; display:inline-flex; align-items:center; justify-content:center;" title="Delete Project">
+                                                <i data-lucide="trash-2" style="width:13px; height:13px;"></i>
+                                            </button>
+                                        <?php else: ?>
+                                            <span class="status-badge <?= $isCompleted ? 'completed' : 'process' ?>" style="font-size: 10.5px; padding: 2px 8px;"><?= htmlspecialchars($p['status']) ?></span>
+                                        <?php endif; ?>
                                     </div>
                                     <span class="project-card-updated"><?= $updated_text ?></span>
                                 </div>
@@ -1406,6 +1857,15 @@ try {
 
                                     </div>
                                 </div>
+                                <?php if ($isCompleted): ?>
+                                <div style="margin-top:10px; padding-top:10px; border-top:1px solid #e2e8f0; display:flex; justify-content:flex-end;">
+                                    <button onclick="downloadProjectPDF(<?= $p['id'] ?>, '<?= addslashes(htmlspecialchars($p['name'])) ?>')"
+                                            style="display:flex; align-items:center; gap:6px; background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; border:none; border-radius:7px; padding:6px 12px; font-size:11px; font-weight:600; cursor:pointer; font-family:inherit;">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        Download PDF
+                                    </button>
+                                </div>
+                                <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
                     </div>
@@ -1959,7 +2419,7 @@ try {
                 <?php endif; ?>
 
                 <!-- ===== ORGANIZATIONS VIEW (Platform Admin only) ===== -->
-                <?php if ($isAdmin): ?>
+                <?php if ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Super Admin'): ?>
                 <div id="view-organizations" class="tab-view active">
                     <div class="section-card">
                         <div class="card-header" style="border-bottom: none; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center;">
@@ -1975,6 +2435,8 @@ try {
                         <?php
                         $orgs = $pdo->query("
                             SELECT o.*,
+                                (SELECT name FROM `employees` e WHERE e.org_id = o.id AND e.role = 'Project Lead' LIMIT 1) as admin_name,
+                                (SELECT email FROM `employees` e WHERE e.org_id = o.id AND e.role = 'Project Lead' LIMIT 1) as admin_email,
                                 (SELECT COUNT(*) FROM `employees` e WHERE e.org_id = o.id AND e.role != 'Admin') as emp_count,
                                 (SELECT COUNT(*) FROM `projects` p WHERE p.org_id = o.id) as proj_count
                             FROM `organizations` o
@@ -1995,12 +2457,12 @@ try {
                                     <thead>
                                         <tr>
                                             <th style="text-align: left; padding: 10px 16px;">Organization</th>
+                                            <th style="text-align: left; padding: 10px 16px;">Admin Details</th>
+                                            <th style="text-align: left; padding: 10px 16px;">Contact / Details</th>
                                             <th style="text-align: center; padding: 10px 16px;">Employees</th>
                                             <th style="text-align: center; padding: 10px 16px;">Projects</th>
                                             <th style="text-align: left; padding: 10px 16px;">Registered</th>
-                                            <?php if ($jwtPayload['role'] === 'Admin'): ?>
                                             <th style="text-align: center; padding: 10px 16px;">Actions</th>
-                                            <?php endif; ?>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -2017,18 +2479,31 @@ try {
                                                 </div>
                                             </div>
                                         </td>
+                                        <td style="padding: 12px 16px; font-size: 12.5px; color: #0f172a;">
+                                            <div style="font-weight: 600;"><?= htmlspecialchars($org['admin_name'] ?: '-') ?></div>
+                                            <div style="color: #64748b; font-size: 11.5px;"><?= htmlspecialchars($org['admin_email'] ?: '-') ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px; font-size: 12px; color: #64748b; max-width: 250px;">
+                                            <div><strong>Phone:</strong> <?= htmlspecialchars($org['phone'] ?: '-') ?></div>
+                                            <div><strong>Address:</strong> <?= htmlspecialchars($org['address'] ?: '-') ?></div>
+                                            <div><strong>Details:</strong> <?= htmlspecialchars($org['details'] ?: '-') ?></div>
+                                        </td>
                                         <td style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 700; color: #2563eb;"><?= $org['emp_count'] ?></td>
                                         <td style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 700; color: #7c3aed;"><?= $org['proj_count'] ?></td>
                                         <td style="padding: 12px 16px; font-size: 12.5px; color: #64748b;"><?= date('d M Y', strtotime($org['created_at'])) ?></td>
                                         <td style="padding: 12px 16px; text-align: center;">
-                                            <div style="display: flex; gap: 6px; justify-content: center;">
+                                            <div style="display: flex; gap: 6px; justify-content: center; align-items: center;">
                                                 <button class="btn-approve-org" data-org-id="<?= $org['id'] ?>"
-                                                    style="height: 28px; padding: 0 12px; font-size: 11px; font-weight: 700; background: #10b981; color: #fff; border: none; border-radius: 6px; cursor: pointer;">
+                                                    style="height: 28px; padding: 0 10px; font-size: 11px; font-weight: 700; background: #10b981; color: #fff; border: none; border-radius: 6px; cursor: pointer;">
                                                     ✓ Approve
                                                 </button>
                                                 <button class="btn-reject-org" data-org-id="<?= $org['id'] ?>"
-                                                    style="height: 28px; padding: 0 12px; font-size: 11px; font-weight: 700; background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; border-radius: 6px; cursor: pointer;">
+                                                    style="height: 28px; padding: 0 10px; font-size: 11px; font-weight: 700; background: #e2e8f0; color: #475569; border: none; border-radius: 6px; cursor: pointer;">
                                                     ✗ Reject
+                                                </button>
+                                                <button class="btn-delete-org-direct" onclick="deleteOrganization(<?= $org['id'] ?>)" data-org-id="<?= $org['id'] ?>"
+                                                    style="height: 28px; padding: 0 10px; font-size: 11px; font-weight: 700; background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; border-radius: 6px; cursor: pointer;">
+                                                    🗑 Delete
                                                 </button>
                                             </div>
                                         </td>
@@ -2052,10 +2527,12 @@ try {
                                     <thead>
                                         <tr>
                                             <th style="text-align: left; padding: 10px 16px;">Organization</th>
+                                            <th style="text-align: left; padding: 10px 16px;">Admin Details</th>
+                                            <th style="text-align: left; padding: 10px 16px;">Contact / Details</th>
                                             <th style="text-align: center; padding: 10px 16px;">Employees</th>
                                             <th style="text-align: center; padding: 10px 16px;">Projects</th>
                                             <th style="text-align: left; padding: 10px 16px;">Approved Since</th>
-                                            <th style="text-align: center; padding: 10px 16px;">Status</th>
+                                            <th style="text-align: center; padding: 10px 16px;">Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -2069,13 +2546,28 @@ try {
                                                 <span style="font-size: 13.5px; font-weight: 700; color: #0f172a;"><?= htmlspecialchars($org['name']) ?></span>
                                             </div>
                                         </td>
+                                        <td style="padding: 12px 16px; font-size: 12.5px; color: #0f172a;">
+                                            <div style="font-weight: 600;"><?= htmlspecialchars($org['admin_name'] ?: '-') ?></div>
+                                            <div style="color: #64748b; font-size: 11.5px;"><?= htmlspecialchars($org['admin_email'] ?: '-') ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px; font-size: 12px; color: #64748b; max-width: 250px;">
+                                            <div><strong>Phone:</strong> <?= htmlspecialchars($org['phone'] ?: '-') ?></div>
+                                            <div><strong>Address:</strong> <?= htmlspecialchars($org['address'] ?: '-') ?></div>
+                                            <div><strong>Details:</strong> <?= htmlspecialchars($org['details'] ?: '-') ?></div>
+                                        </td>
                                         <td style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 700; color: #2563eb;"><?= $org['emp_count'] ?></td>
                                         <td style="padding: 12px 16px; text-align: center; font-size: 13px; font-weight: 700; color: #7c3aed;"><?= $org['proj_count'] ?></td>
                                         <td style="padding: 12px 16px; font-size: 12.5px; color: #64748b;"><?= date('d M Y', strtotime($org['created_at'])) ?></td>
                                         <td style="padding: 12px 16px; text-align: center;">
-                                            <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; color: #065f46; background: #dcfce7; padding: 3px 10px; border-radius: 20px; border: 1px solid #bbf7d0;">
-                                                <span style="width: 6px; height: 6px; border-radius: 50%; background: #10b981;"></span>Active
-                                            </span>
+                                            <div style="display: flex; gap: 6px; justify-content: center; align-items: center;">
+                                                <span style="display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 700; color: #065f46; background: #dcfce7; padding: 3px 10px; border-radius: 20px; border: 1px solid #bbf7d0;">
+                                                    <span style="width: 6px; height: 6px; border-radius: 50%; background: #10b981;"></span>Active
+                                                </span>
+                                                <button class="btn-delete-org-direct" onclick="deleteOrganization(<?= $org['id'] ?>)" data-org-id="<?= $org['id'] ?>"
+                                                    style="height: 28px; padding: 0 10px; font-size: 11px; font-weight: 700; background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; border-radius: 6px; cursor: pointer;">
+                                                    🗑 Delete
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -2092,18 +2584,37 @@ try {
                             </h4>
                             <div class="table-responsive" style="margin-bottom: 0;">
                                 <table class="table-custom" style="width: 100%;">
-                                    <thead><tr>
-                                        <th style="text-align: left; padding: 10px 16px;">Organization</th>
-                                        <th style="text-align: left; padding: 10px 16px;">Registered</th>
-                                        <th style="text-align: center; padding: 10px 16px;">Status</th>
-                                    </tr></thead>
+                                    <thead>
+                                        <tr>
+                                            <th style="text-align: left; padding: 10px 16px;">Organization</th>
+                                            <th style="text-align: left; padding: 10px 16px;">Admin Details</th>
+                                            <th style="text-align: left; padding: 10px 16px;">Contact / Details</th>
+                                            <th style="text-align: left; padding: 10px 16px;">Registered</th>
+                                            <th style="text-align: center; padding: 10px 16px;">Actions</th>
+                                        </tr>
+                                    </thead>
                                     <tbody>
                                     <?php foreach ($rejectedOrgs as $org): ?>
                                     <tr style="border-bottom: 1px solid #f1f5f9;">
                                         <td style="padding: 12px 16px; font-size: 13.5px; font-weight: 600; color: #94a3b8;"><?= htmlspecialchars($org['name']) ?></td>
+                                        <td style="padding: 12px 16px; font-size: 12.5px; color: #94a3b8;">
+                                            <div style="font-weight: 600;"><?= htmlspecialchars($org['admin_name'] ?: '-') ?></div>
+                                            <div style="color: #64748b; font-size: 11.5px;"><?= htmlspecialchars($org['admin_email'] ?: '-') ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px; font-size: 12px; color: #64748b; max-width: 250px;">
+                                            <div><strong>Phone:</strong> <?= htmlspecialchars($org['phone'] ?: '-') ?></div>
+                                            <div><strong>Address:</strong> <?= htmlspecialchars($org['address'] ?: '-') ?></div>
+                                            <div><strong>Details:</strong> <?= htmlspecialchars($org['details'] ?: '-') ?></div>
+                                        </td>
                                         <td style="padding: 12px 16px; font-size: 12.5px; color: #94a3b8;"><?= date('d M Y', strtotime($org['created_at'])) ?></td>
                                         <td style="padding: 12px 16px; text-align: center;">
-                                            <span style="font-size: 10.5px; font-weight: 700; color: #991b1b; background: #fee2e2; padding: 3px 10px; border-radius: 20px; border: 1px solid #fecaca;">Rejected</span>
+                                            <div style="display: flex; gap: 6px; justify-content: center; align-items: center;">
+                                                <span style="font-size: 10.5px; font-weight: 700; color: #991b1b; background: #fee2e2; padding: 3px 10px; border-radius: 20px; border: 1px solid #fecaca;">Rejected</span>
+                                                <button class="btn-delete-org-direct" onclick="deleteOrganization(<?= $org['id'] ?>)" data-org-id="<?= $org['id'] ?>"
+                                                    style="height: 28px; padding: 0 10px; font-size: 11px; font-weight: 700; background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; border-radius: 6px; cursor: pointer;">
+                                                    🗑 Delete
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -2115,9 +2626,10 @@ try {
 
                     </div>
                 </div>
-                <?php endif; // end isAdmin org view ?>
+                <?php endif; ?>
 
-                <div id="view-users" class="tab-view <?= $jwtPayload['role'] === 'Admin' ? '' : '' ?>">
+                <?php if ($jwtPayload['role'] !== 'Admin'): ?>
+                <div id="view-users" class="tab-view">
                     <div class="section-card">
                         <div class="card-header" style="border-bottom: none; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center;">
                             <div>
@@ -2825,6 +3337,38 @@ try {
         </div>
     </div>
 
+    <!-- Modal: Edit Task -->
+    <div class="modal-overlay" id="modal-edit-task">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3>Edit Task Due Date & Duration</h3>
+                <button class="modal-close"><i data-lucide="x"></i></button>
+            </div>
+            <form id="form-edit-task" method="POST">
+                <input type="hidden" name="action" value="update_task_details">
+                <input type="hidden" name="task_id" id="edit-tk-id">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Task Title</label>
+                        <input type="text" id="edit-tk-title" class="form-control" readonly style="background:#f1f5f9; color:#64748b;">
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-tk-due">Due Date</label>
+                        <input type="date" name="due_date" id="edit-tk-due" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-tk-days">Estimated Duration (Days)</label>
+                        <input type="number" name="estimated_duration" id="edit-tk-days" class="form-control" min="1">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary modal-close-btn">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Modal 2: Create Project -->
     <div class="modal-overlay" id="modal-project">
         <div class="modal-container">
@@ -3359,6 +3903,68 @@ try {
         </div>
     </div>
 
+    <!-- Modal: All Notifications -->
+    <div class="modal-overlay" id="modal-all-notifications">
+        <div class="modal-container" style="max-width: 600px; width: 90%;">
+            <div class="modal-header" style="border-bottom: 1px solid #f1f5f9; padding-bottom: 12px;">
+                <h3 style="font-size: 14px; font-weight: 700; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+                    <i data-lucide="bell" style="width: 16px; height: 16px; color: #3b82f6;"></i>
+                    All Notifications
+                </h3>
+                <button class="modal-close"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-body" style="max-height: 400px; overflow-y: auto; padding: 20px 0;">
+                <div style="display:flex; flex-direction:column; gap:12px; padding: 0 4px;">
+                    <?php
+                    $stmtAllNotif = $pdo->prepare("SELECT * FROM `notifications` WHERE org_id = ? ORDER BY id DESC");
+                    $stmtAllNotif->execute([$meOrgId]);
+                    $allNotifications = $stmtAllNotif->fetchAll(PDO::FETCH_ASSOC);
+                    if (empty($allNotifications)) {
+                        echo '
+                        <div style="text-align:center; padding: 40px 20px; color:#64748b;">
+                            <i data-lucide="bell-off" style="width:36px; height:36px; margin-bottom:10px; color:#94a3b8; display:inline-block;"></i>
+                            <div style="font-size:13px; font-weight:600; color:#0f172a;">No notifications yet</div>
+                            <div style="font-size:11px; color:#94a3b8; margin-top:2px;">We\'ll notify you when tasks or projects are updated.</div>
+                        </div>';
+                    } else {
+                        foreach ($allNotifications as $n) {
+                            $cat = $n['category'];
+                            $bg = '#eff6ff'; $color = '#3b82f6'; $icon = 'info';
+                            if ($cat === 'success') {
+                                $bg = '#dcfce7'; $color = '#10b981'; $icon = 'check';
+                            } else if ($cat === 'warning') {
+                                $bg = '#fef3c7'; $color = '#f59e0b'; $icon = 'alert-triangle';
+                            } else if ($cat === 'danger') {
+                                $bg = '#fee2e2'; $color = '#ef4444'; $icon = 'alert-circle';
+                            }
+                            $timeStr = time_elapsed_string($n['created_at']);
+                            $fullDateTime = date('d M Y, h:i A', strtotime($n['created_at']));
+                            echo '
+                            <div style="display:flex; align-items:flex-start; gap:12px; padding: 12px; border-radius: 8px; border: 1px solid #f1f5f9; background: #fafafa;">
+                                <div style="width:30px; height:30px; background:\'' . $bg . '\'; color:\'' . $color . '\'; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+                                    <i data-lucide="' . $icon . '" style="width:14px; height:14px;"></i>
+                                </div>
+                                <div style="flex:1;">
+                                    <div style="font-size:12px; font-weight:600; color:#0f172a; line-height: 1.4;">' . htmlspecialchars($n['message']) . '</div>
+                                    <div style="font-size:10px; color:#94a3b8; margin-top:6px; display:flex; align-items:center; gap:8px;">
+                                        <span>' . $timeStr . '</span>
+                                        <span style="color:#cbd5e1;">•</span>
+                                        <span>' . $fullDateTime . '</span>
+                                    </div>
+                                </div>
+                            </div>';
+                        }
+                    }
+                    ?>
+                </div>
+            </div>
+            <div class="modal-footer" style="border-top: 1px solid #f1f5f9; padding-top: 12px; display: flex; justify-content: flex-end;">
+                <button type="button" class="btn btn-secondary modal-close-btn">Close</button>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
 
     <!-- Export DB variables for JS rendering -->
     <script>
@@ -3384,13 +3990,453 @@ try {
             meAvatar: <?= json_encode($meAvatar) ?>,
             serverDate: <?= json_encode(date('Y-m-d')) ?>
         };
+
+        function deleteOrganization(orgId) {
+            if (confirm('Are you absolutely sure you want to delete this organization and ALL its projects, tasks, employees, and data? This action CANNOT be undone.')) {
+                const formData = new FormData();
+                formData.append('action', 'delete_org');
+                formData.append('org_id', orgId);
+                fetch('api.php', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        window.location.reload();
+                    } else {
+                        alert(data.message);
+                    }
+                });
+            }
+        }
     </script>
 
     <!-- JS CDN Packages -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="app.js"></script>
+    <!-- PDF Export Script -->
+    <script>
+    async function downloadProjectPDF(projectId, projectName) {
+        // Show loading state
+        const btn = event.currentTarget;
+        const origText = btn.innerHTML;
+        btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Loading...';
+        btn.disabled = true;
+
+        try {
+            const token = localStorage.getItem('authToken') || sessionStorage.getItem('authToken') || '';
+            const res = await fetch('api.php?action=get_project_pdf_data&project_id=' + projectId, {
+                headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.message || 'Failed to load project data.');
+
+            const p = data.project;
+            const tasks = data.tasks || [];
+            const members = data.members || [];
+
+            // Build styled HTML report
+            const completedTasks = tasks.filter(t => t.status === 'Completed').length;
+            const completionPct = tasks.length > 0 ? Math.round((completedTasks / tasks.length) * 100) : 0;
+
+            let taskRows = tasks.map(t =>
+                `<tr>
+                    <td>${t.title || ''}</td>
+                    <td>${t.assigned_name || 'Unassigned'}</td>
+                    <td><span style="background:${t.status === 'Completed' ? '#dcfce7' : '#fef3c7'}; color:${t.status === 'Completed' ? '#15803d' : '#d97706'}; padding:2px 8px; border-radius:4px; font-size:11px;">${t.status || ''}</span></td>
+                    <td>${t.due_date ? new Date(t.due_date).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'}) : '-'}</td>
+                </tr>`
+            ).join('');
+
+            let memberRows = members.map(m =>
+                `<tr><td>${m.name || ''}</td><td>${m.role || ''}</td></tr>`
+            ).join('');
+
+            const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Project Report - ${p.name || projectName}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
+  body { font-family: 'Outfit', Arial, sans-serif; color: #0f172a; margin: 0; padding: 40px; background: #f8fafc; }
+  .header { background: linear-gradient(135deg, #1e293b, #0f172a); color: #fff; padding: 28px 32px; border-radius: 12px; margin-bottom: 24px; }
+  .header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 800; }
+  .header p { margin: 0; color: rgba(255,255,255,0.65); font-size: 13px; }
+  .badge { display: inline-block; background: #10b981; color: #fff; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 99px; margin-left: 10px; }
+  .section { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 20px 24px; margin-bottom: 18px; }
+  .section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin-bottom: 14px; }
+  .meta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .meta-item label { display: block; font-size: 10px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+  .meta-item span { font-size: 13px; font-weight: 600; color: #0f172a; }
+  .progress-bar { height: 10px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin: 10px 0; }
+  .progress-fill { height: 100%; background: #10b981; border-radius: 99px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { background: #f1f5f9; padding: 8px 12px; text-align: left; font-weight: 700; color: #475569; border-bottom: 2px solid #e2e8f0; }
+  td { padding: 8px 12px; border-bottom: 1px solid #f1f5f9; color: #334155; }
+  tr:last-child td { border-bottom: none; }
+  .footer { text-align: center; font-size: 10px; color: #94a3b8; margin-top: 24px; }
+  @media print { body { background: white; padding: 20px; } }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>${p.name || projectName} <span class="badge">✓ Completed</span></h1>
+  <p>Project Completion Report &nbsp;|&nbsp; Generated on ${new Date().toLocaleDateString('en-GB', {day:'2-digit',month:'long',year:'numeric'})}</p>
+</div>
+<div class="section">
+  <div class="section-title">Project Details</div>
+  <div class="meta-grid">
+    <div class="meta-item"><label>Client</label><span>${p.client_name || 'N/A'}</span></div>
+    <div class="meta-item"><label>Service Type</label><span>${p.service_type || '-'}</span></div>
+    <div class="meta-item"><label>Location</label><span>${p.name || '-'}</span></div>
+    <div class="meta-item"><label>Start Date</label><span>${p.created_at ? new Date(p.created_at).toLocaleDateString('en-GB') : '-'}</span></div>
+    <div class="meta-item"><label>Target Date</label><span>${p.due_date ? new Date(p.due_date).toLocaleDateString('en-GB') : '-'}</span></div>
+    <div class="meta-item"><label>Priority</label><span>${p.priority || 'Normal'}</span></div>
+  </div>
+</div>
+<div class="section">
+  <div class="section-title">Task Completion Summary</div>
+  <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; font-weight:600;">
+    <span>Overall Progress</span><span style="color:#10b981;">${completedTasks}/${tasks.length} tasks completed (${completionPct}%)</span>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" style="width:${completionPct}%;"></div></div>
+</div>
+${members.length > 0 ? `<div class="section"><div class="section-title">Team Members</div><table><thead><tr><th>Name</th><th>Role</th></tr></thead><tbody>${memberRows}</tbody></table></div>` : ''}
+${tasks.length > 0 ? `<div class="section"><div class="section-title">Task Details</div><table><thead><tr><th>Task</th><th>Assigned To</th><th>Status</th><th>Due Date</th></tr></thead><tbody>${taskRows}</tbody></table></div>` : ''}
+${p.description ? `<div class="section"><div class="section-title">Project Notes</div><p style="font-size:13px; color:#475569; margin:0;">${p.description}</p></div>` : ''}
+<div class="footer">This report was automatically generated by the Task Management System.</div>
+</body></html>`;
+
+            const win = window.open('', '_blank');
+            win.document.write(html);
+            win.document.close();
+            setTimeout(() => { win.print(); }, 600);
+        } catch (err) {
+            alert('PDF Error: ' + err.message);
+        } finally {
+            btn.innerHTML = origText;
+            btn.disabled = false;
+        }
+    }
+    </script>
+
+    <!-- ============================================================
+         PROJECT DETAILS MODAL
+         ============================================================ -->
+    <div id="projectDetailsModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.65); z-index:10000; align-items:center; justify-content:center; backdrop-filter:blur(4px);">
+        <div style="background:#fff; border-radius:16px; width:94%; max-width:860px; max-height:92vh; display:flex; flex-direction:column; box-shadow:0 25px 60px rgba(0,0,0,0.3); overflow:hidden;">
+            <!-- Modal Header -->
+            <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb); padding:20px 24px; display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+                <div>
+                    <div id="pdm-title" style="font-size:18px; font-weight:800; color:#fff; margin-bottom:2px;"></div>
+                    <div id="pdm-org" style="font-size:12px; color:rgba(255,255,255,0.7);"></div>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span id="pdm-status-badge" style="font-size:11px; font-weight:700; padding:4px 12px; border-radius:99px; background:rgba(255,255,255,0.2); color:#fff; border:1px solid rgba(255,255,255,0.3);"></span>
+                    <button onclick="closeProjectDetailsModal()" style="background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3); color:#fff; border-radius:8px; width:32px; height:32px; cursor:pointer; font-size:18px; line-height:1; display:flex; align-items:center; justify-content:center;">&times;</button>
+                </div>
+            </div>
+
+            <!-- Loader -->
+            <div id="pdm-loader" style="text-align:center; padding:60px 40px; color:#64748b;">
+                <div style="font-size:32px; margin-bottom:12px;">⏳</div>
+                <div style="font-weight:600;">Loading project details...</div>
+            </div>
+
+            <!-- Content -->
+            <div id="pdm-content" style="display:none; overflow-y:auto; flex:1; padding:0;">
+
+                <!-- Meta Info Grid -->
+                <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:0; border-bottom:1px solid #e2e8f0;">
+                    <div style="padding:14px 18px; text-align:center; border-right:1px solid #e2e8f0;">
+                        <div style="font-size:10px; color:#94a3b8; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Client</div>
+                        <div id="pdm-client" style="font-size:13px; font-weight:700; color:#0f172a;"></div>
+                    </div>
+                    <div style="padding:14px 18px; text-align:center; border-right:1px solid #e2e8f0;">
+                        <div style="font-size:10px; color:#94a3b8; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Priority</div>
+                        <div id="pdm-priority" style="font-size:13px; font-weight:700; color:#0f172a;"></div>
+                    </div>
+                    <div style="padding:14px 18px; text-align:center; border-right:1px solid #e2e8f0;">
+                        <div style="font-size:10px; color:#94a3b8; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Start Date</div>
+                        <div id="pdm-start" style="font-size:13px; font-weight:700; color:#0f172a;"></div>
+                    </div>
+                    <div style="padding:14px 18px; text-align:center;">
+                        <div style="font-size:10px; color:#94a3b8; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Due Date</div>
+                        <div id="pdm-due" style="font-size:13px; font-weight:700; color:#0f172a;"></div>
+                    </div>
+                </div>
+
+                <div style="padding:20px 24px; display:flex; flex-direction:column; gap:20px;">
+
+                    <!-- Progress -->
+                    <div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                            <div style="font-size:13px; font-weight:700; color:#0f172a;">Overall Progress</div>
+                            <div id="pdm-progress-text" style="font-size:13px; font-weight:800; color:#10b981;"></div>
+                        </div>
+                        <div style="height:10px; background:#e2e8f0; border-radius:99px; overflow:hidden;">
+                            <div id="pdm-progress-bar" style="height:100%; background:linear-gradient(90deg,#10b981,#34d399); border-radius:99px; transition:width 0.6s ease;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Description -->
+                    <div id="pdm-desc-wrapper" style="display:none;">
+                        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; margin-bottom:8px;">Description</div>
+                        <div id="pdm-desc" style="font-size:13px; color:#334155; line-height:1.6; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px 14px;"></div>
+                    </div>
+
+                    <!-- Created by -->
+                    <div style="font-size:12px; color:#64748b;">Created by: <strong id="pdm-creator" style="color:#0f172a;"></strong></div>
+
+                    <!-- Team Members -->
+                    <div>
+                        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; margin-bottom:10px;">Team Members</div>
+                        <div id="pdm-members" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+                    </div>
+
+                    <!-- Tasks -->
+                    <div>
+                        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; margin-bottom:10px;">Tasks</div>
+                        <div id="pdm-tasks" style="display:flex; flex-direction:column; gap:6px;"></div>
+                    </div>
+
+                    <!-- Timeline/Milestones -->
+                    <div id="pdm-milestones-wrapper" style="display:none;">
+                        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; margin-bottom:10px;">Timeline / Milestones</div>
+                        <div id="pdm-milestones" style="display:flex; flex-direction:column; gap:8px;"></div>
+                    </div>
+
+                    <!-- Activity History -->
+                    <div id="pdm-activity-wrapper" style="display:none;">
+                        <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#64748b; margin-bottom:10px;">Activity History</div>
+                        <div id="pdm-activities" style="display:flex; flex-direction:column; gap:6px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // ================================================================
+    // PROJECT DETAILS MODAL
+    // ================================================================
+    function openProjectDetailsModal(projectId) {
+        const modal = document.getElementById('projectDetailsModal');
+        const loader = document.getElementById('pdm-loader');
+        const content = document.getElementById('pdm-content');
+
+        modal.style.display = 'flex';
+        loader.style.display = 'block';
+        content.style.display = 'none';
+
+        fetch(`api.php?action=get_project_details&project_id=${projectId}`)
+        .then(r => r.json())
+        .then(data => {
+            loader.style.display = 'none';
+            if (!data.success) { alert('Error: ' + data.message); return; }
+
+            const p = data.project;
+            const tasks = data.tasks || [];
+            const members = data.members || [];
+            const activities = data.activities || [];
+            const milestones = data.milestones || [];
+
+            // Header
+            document.getElementById('pdm-title').textContent = p.name || '—';
+            document.getElementById('pdm-org').textContent = p.org_name || '';
+            document.getElementById('pdm-status-badge').textContent = p.status || '—';
+
+            // Meta
+            document.getElementById('pdm-client').textContent = p.client_name || 'None';
+            document.getElementById('pdm-priority').textContent = p.priority || '—';
+            document.getElementById('pdm-start').textContent = p.created_at ? new Date(p.created_at).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'}) : '—';
+            document.getElementById('pdm-due').textContent = p.due_date ? new Date(p.due_date).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'}) : '—';
+
+            // Progress
+            const pct = data.progress || 0;
+            document.getElementById('pdm-progress-text').textContent = `${data.completed_tasks}/${data.total_tasks} (${pct}%)`;
+            document.getElementById('pdm-progress-bar').style.width = pct + '%';
+
+            // Description
+            if (p.description) {
+                document.getElementById('pdm-desc').textContent = p.description;
+                document.getElementById('pdm-desc-wrapper').style.display = 'block';
+            }
+
+            // Creator
+            document.getElementById('pdm-creator').textContent = p.created_by_name || 'Unknown';
+
+            // Members
+            const membersEl = document.getElementById('pdm-members');
+            if (members.length > 0) {
+                membersEl.innerHTML = members.map(m => {
+                    const initials = (m.avatar || m.name.split(' ').map(x=>x[0]).join('').slice(0,2)).toUpperCase();
+                    return `<div style="display:flex; align-items:center; gap:8px; background:#f1f5f9; border:1px solid #e2e8f0; border-radius:24px; padding:5px 12px 5px 5px;">
+                        <div style="width:28px; height:28px; border-radius:50%; background:linear-gradient(135deg,#2563eb,#6366f1); color:#fff; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700;">${initials}</div>
+                        <div>
+                            <div style="font-size:12px; font-weight:700; color:#0f172a;">${m.name}</div>
+                            <div style="font-size:10px; color:#64748b;">${m.role}</div>
+                        </div>
+                    </div>`;
+                }).join('');
+            } else {
+                membersEl.innerHTML = '<span style="font-size:12px; color:#94a3b8;">No team members assigned.</span>';
+            }
+
+            // Tasks
+            const statusColors = { 'Todo': '#3b82f6', 'In Progress': '#f59e0b', 'Completed': '#10b981', 'In Review': '#8b5cf6' };
+            const priorityColors = { 'High': '#ef4444', 'Medium': '#f59e0b', 'Low': '#22c55e' };
+            const tasksEl = document.getElementById('pdm-tasks');
+            if (tasks.length > 0) {
+                tasksEl.innerHTML = tasks.map(t => {
+                    const sc = statusColors[t.status] || '#64748b';
+                    const pc = priorityColors[t.priority] || '#64748b';
+                    const due = t.due_date ? new Date(t.due_date).toLocaleDateString('en-GB',{day:'2-digit',month:'short'}) : '—';
+                    return `<div style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;">
+                        <div style="width:8px; height:8px; border-radius:50%; background:${sc}; flex-shrink:0;"></div>
+                        <div style="flex:1; font-size:12px; font-weight:600; color:#0f172a;">${t.title}</div>
+                        <div style="font-size:10px; color:#64748b;">👤 ${t.assigned_name || '—'}</div>
+                        <div style="font-size:10px; background:${sc}22; color:${sc}; padding:2px 7px; border-radius:4px; font-weight:600;">${t.status}</div>
+                        <div style="font-size:10px; background:${pc}22; color:${pc}; padding:2px 7px; border-radius:4px; font-weight:600;">${t.priority}</div>
+                        <div style="font-size:10px; color:#94a3b8; white-space:nowrap;">📅 ${due}</div>
+                    </div>`;
+                }).join('');
+            } else {
+                tasksEl.innerHTML = '<div style="font-size:12px; color:#94a3b8; text-align:center; padding:20px;">No tasks found for this project.</div>';
+            }
+
+            // Milestones
+            if (milestones.length > 0) {
+                document.getElementById('pdm-milestones-wrapper').style.display = 'block';
+                document.getElementById('pdm-milestones').innerHTML = milestones.map((m, i) => {
+                    const sc = statusColors[m.status] || '#64748b';
+                    return `<div style="display:flex; align-items:center; gap:12px; padding:8px 14px; border:1px solid #e2e8f0; border-radius:8px; background:#fff;">
+                        <div style="width:24px; height:24px; border-radius:50%; background:${sc}; color:#fff; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; flex-shrink:0;">${i+1}</div>
+                        <div style="flex:1; font-size:12px; font-weight:600; color:#0f172a;">${m.title}</div>
+                        <div style="font-size:10px; color:#64748b;">👤 ${m.assignee || '—'}</div>
+                        <div style="font-size:10px; background:${sc}22; color:${sc}; padding:2px 7px; border-radius:4px; font-weight:600;">${m.status}</div>
+                        <div style="font-size:10px; color:#94a3b8;">📅 ${m.due_date || '—'}</div>
+                    </div>`;
+                }).join('');
+            }
+
+            // Activities
+            if (activities.length > 0) {
+                document.getElementById('pdm-activity-wrapper').style.display = 'block';
+                document.getElementById('pdm-activities').innerHTML = activities.map(a => `
+                    <div style="display:flex; align-items:flex-start; gap:10px; padding:8px 12px; background:#f8fafc; border-radius:6px;">
+                        <div style="width:8px; height:8px; border-radius:50%; background:#6366f1; flex-shrink:0; margin-top:4px;"></div>
+                        <div>
+                            <div style="font-size:12px; font-weight:600; color:#0f172a;">${a.action}</div>
+                            <div style="font-size:10px; color:#94a3b8;">${a.logged_date || ''}</div>
+                        </div>
+                    </div>`).join('');
+            }
+
+            content.style.display = 'block';
+        })
+        .catch(err => {
+            loader.innerHTML = '<span style="color:#ef4444;">Error loading project. Please try again.</span>';
+            console.error(err);
+        });
+    }
+
+    function closeProjectDetailsModal() {
+        const modal = document.getElementById('projectDetailsModal');
+        modal.style.display = 'none';
+        // Reset
+        document.getElementById('pdm-content').style.display = 'none';
+        document.getElementById('pdm-loader').style.display = 'block';
+        document.getElementById('pdm-desc-wrapper').style.display = 'none';
+        document.getElementById('pdm-milestones-wrapper').style.display = 'none';
+        document.getElementById('pdm-activity-wrapper').style.display = 'none';
+    }
+
+    // Close on outside click
+    document.getElementById('projectDetailsModal').addEventListener('click', function(e) {
+        if (e.target === this) closeProjectDetailsModal();
+    });
+
+    // ================================================================
+    // PROJECT CARD CLICK → OPEN DETAILS
+    // ================================================================
+    document.addEventListener('click', function(e) {
+        // Project card click (not on interactive controls)
+        const card = e.target.closest('.project-grid-card');
+        if (card) {
+            const clickedOnControl = e.target.closest('select, button, a, input');
+            if (!clickedOnControl) {
+                const projectId = card.getAttribute('data-id');
+                if (projectId) {
+                    openProjectDetailsModal(projectId);
+                }
+            }
+        }
+    });
+
+    // ================================================================
+    // PROJECT STATUS DROPDOWN CHANGE (Admin/Project Lead only)
+    // ================================================================
+    document.addEventListener('change', function(e) {
+        const sel = e.target.closest('.project-status-select');
+        if (!sel) return;
+        const projectId = sel.getAttribute('data-id');
+        const newStatus = sel.value;
+        if (!projectId || !newStatus) return;
+
+        const fd = new FormData();
+        fd.append('action', 'update_project_status');
+        fd.append('id', projectId);
+        fd.append('status', newStatus);
+
+        fetch('api.php', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(res => {
+            if (res.success) {
+                // Update card data-status
+                const card = sel.closest('.project-grid-card');
+                if (card) card.setAttribute('data-status', newStatus);
+            } else {
+                alert('Failed to update: ' + res.message);
+                // Revert
+                location.reload();
+            }
+        })
+        .catch(() => { alert('Network error.'); });
+    });
+
+    // ================================================================
+    // PROJECT DELETE BUTTON (Admin/Project Lead only)
+    // ================================================================
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.btn-delete-project');
+        if (!btn) return;
+        e.stopPropagation();
+        const projectId = btn.getAttribute('data-id');
+        if (!projectId) return;
+
+        if (!confirm('Are you sure you want to delete this project and ALL its tasks? This cannot be undone.')) return;
+
+        const fd = new FormData();
+        fd.append('action', 'delete_project');
+        fd.append('id', projectId);
+
+        fetch('api.php', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(res => {
+            if (res.success) {
+                // Remove card from DOM
+                const card = btn.closest('.project-grid-card');
+                if (card) card.remove();
+            } else {
+                alert('Delete failed: ' + res.message);
+            }
+        })
+        .catch(() => { alert('Network error while deleting project.'); });
+    });
+    </script>
 </body>
+
 </html>
 
 
