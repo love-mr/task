@@ -337,7 +337,7 @@ function setupModals() {
         'btn-add-employee': 'modal-employee',
         'btn-notes-add-note': 'modal-add-note',
         'btn-new-discussion': 'modal-discussion',
-        'btn-new-group': 'modal-start-direct-chat',
+        'btn-new-direct-message': 'modal-start-direct-chat',
         'btn-docs-add': 'modal-upload-doc',
         'btn-add-department': 'modal-department',
         'btn-add-building': 'modal-building',
@@ -445,38 +445,59 @@ function setupFormActions() {
 
                 const formData = new FormData(form);
                 
-                fetch(actionUrl, {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(response => response.json())
-                .then(result => {
-                    if (result.success) {
-                        alert(result.message);
-                        form.reset();
-                        // Hide modal
-                        const modal = form.closest('.modal-overlay');
-                        if (modal) {
-                            modal.classList.remove('active');
-                        }
-                        // Reload page
-                        window.location.reload();
-                    } else {
-                        alert('Error: ' + result.message);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error submitting form:', error);
-                    alert('Submission failed. Please try again.');
-                });
+                // --- E2EE Intercept for New Discussion ---
+                if (formId === 'form-new-discussion') {
+                    // Generate a shared AES key and encrypt it for self
+                    generateAESKey().then(aesKeyObj => {
+                        exportAESKey(aesKeyObj).then(aesKeyBase64 => {
+                            const selfPubKey = localStorage.getItem('e2ee_public_key');
+                            encryptAESKeyWithRSA(aesKeyBase64, selfPubKey).then(encSelf => {
+                                formData.append('encrypted_key_self', encSelf);
+                                submitFormAjax(actionUrl, formData, form);
+                            });
+                        });
+                    }).catch(err => {
+                        console.error("Failed to generate group AES key:", err);
+                        alert("Failed to setup secure chat. Please check console.");
+                    });
+                } else {
+                    submitFormAjax(actionUrl, formData, form);
+                }
             });
         }
     });
 
+    function submitFormAjax(actionUrl, formData, form) {
+        fetch(actionUrl, {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                alert(result.message);
+                form.reset();
+                // Hide modal
+                const modal = form.closest('.modal-overlay');
+                if (modal) {
+                    modal.classList.remove('active');
+                }
+                // Reload page
+                window.location.reload();
+            } else {
+                alert('Error: ' + result.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error submitting form:', error);
+            alert('Submission failed. Please try again.');
+        });
+    }
+
     // Form Chat Send message AJAX
     const chatForm = document.getElementById('form-chat-send');
     if (chatForm) {
-        chatForm.addEventListener('submit', function(e) {
+        chatForm.addEventListener('submit', async function(e) {
             e.preventDefault();
             const activeThread = document.querySelector('.chat-thread-item.active');
             if (!activeThread) {
@@ -487,6 +508,13 @@ function setupFormActions() {
             const formData = new FormData(chatForm);
             formData.append('discussion_id', discId);
 
+            // Simple plain-text send (no E2EE complexity)
+            const msgInput = chatForm.querySelector('[name="message"]');
+            const rawMsg = msgInput ? msgInput.value.trim() : '';
+            if (!rawMsg && !formData.get('attachment')) {
+                return; // nothing to send
+            }
+
             fetch('api.php?action=send_message', {
                 method: 'POST',
                 body: formData
@@ -495,14 +523,14 @@ function setupFormActions() {
             .then(res => {
                 if (res.success) {
                     chatForm.reset();
-                    // Reload messages
                     loadThreadMessages(discId);
                 } else {
-                    alert('Failed to send: ' + res.message);
+                    alert('Failed to send: ' + (res.message || 'Server error'));
                 }
             })
             .catch(err => {
-                console.error(err);
+                console.error('Send message error:', err);
+                alert('Network error. Please try again.');
             });
         });
     }
@@ -1006,11 +1034,16 @@ function setupSubTabAndAccordionBindings() {
     
     if (threadItems.length > 0) {
         threadItems.forEach(item => {
-            item.addEventListener('click', function() {
+            item.addEventListener('click', function(e) {
+                // Don't fire if delete button was clicked
+                if (e.target.closest('.thread-delete-btn')) return;
                 threadItems.forEach(ti => ti.classList.remove('active'));
                 item.classList.add('active');
                 
                 const id = item.getAttribute('data-chat-id');
+                window.currentActiveDiscussionId = id; // Set global
+                window.currentAESKey = null; // Reset key
+                
                 const title = item.getAttribute('data-chat-title') || '';
                 const avatar = item.getAttribute('data-chat-avatar') || '';
                 const color = item.getAttribute('data-chat-color') || '';
@@ -1028,7 +1061,38 @@ function setupSubTabAndAccordionBindings() {
                 if (footer) footer.style.display = 'block';
 
                 loadThreadMessages(id);
+                // Start auto-refresh polling for new messages
+                startMessagePolling(id);
             });
+
+            // Delete button on each thread item
+            const delBtn = item.querySelector('.thread-delete-btn');
+            if (delBtn) {
+                delBtn.addEventListener('click', async function(e) {
+                    e.stopPropagation();
+                    const discId = item.getAttribute('data-chat-id');
+                    const title = item.getAttribute('data-chat-title') || 'this discussion';
+                    if (!confirm(`Delete "${title}" and all its messages? This cannot be undone.`)) return;
+                    try {
+                        const fd = new FormData();
+                        fd.append('discussion_id', discId);
+                        const r = await fetch('api.php?action=delete_discussion', { method: 'POST', body: fd });
+                        const res = await r.json();
+                        if (res.success) {
+                            item.remove();
+                            // If it was active, close chat window
+                            if (window.currentActiveDiscussionId == discId) {
+                                const chatCloseBtn = document.getElementById('chat-close-btn');
+                                if (chatCloseBtn) chatCloseBtn.click();
+                            }
+                        } else {
+                            alert('Failed to delete: ' + (res.message || 'Unknown error'));
+                        }
+                    } catch(e) {
+                        alert('Error deleting discussion.');
+                    }
+                });
+            }
         });
 
         // Load messages for the first discussion on load if active
@@ -1054,16 +1118,44 @@ function setupSubTabAndAccordionBindings() {
             if (header) header.style.display = 'none';
             if (footer) footer.style.display = 'none';
             if (messagesContainer) {
-                messagesContainer.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px; font-size: 13px;" id="chat-blank-placeholder">Select a discussion thread to start chatting.</div>';
+                messagesContainer.innerHTML = '<div style="text-align: center; color: var(--text-muted); margin-top: 50px;">Select a discussion to start messaging</div>';
+            }
+            window.currentActiveDiscussionId = null;
+        });
+    }
+
+    const chatDeleteBtn = document.getElementById('chat-delete-btn');
+    if (chatDeleteBtn) {
+        chatDeleteBtn.addEventListener('click', async function() {
+            if (!window.currentActiveDiscussionId) return;
+            if (confirm('Are you sure you want to delete this discussion and all its messages? This cannot be undone.')) {
+                const fd = new FormData();
+                fd.append('discussion_id', window.currentActiveDiscussionId);
+                try {
+                    const r = await fetch('api.php?action=delete_discussion', { method: 'POST', body: fd });
+                    const res = await r.json();
+                    if (res.success) {
+                        alert('Discussion deleted successfully.');
+                        if (chatCloseBtn) chatCloseBtn.click();
+                        loadDiscussionsList();
+                    } else {
+                        alert('Failed to delete: ' + res.message);
+                    }
+                } catch(e) {
+                    alert('Error deleting discussion.');
+                }
             }
         });
     }
+
+    // Audio/Video call logic is now handled by inline onclick calling vyalaCalls from calls.js
+
     
     // Discussion Search & Group Filter
     function filterDiscussionThreads() {
         const query = (document.getElementById('chat-search')?.value || '').toLowerCase().trim();
         const activeGroupBtn = document.querySelector('.chat-group-buttons .chat-group-btn.active');
-        const activeGroup = activeGroupBtn ? activeGroupBtn.getAttribute('data-chat-group') : 'General';
+        const activeGroup = activeGroupBtn ? activeGroupBtn.getAttribute('data-chat-group') : 'All';
 
         threadItems.forEach(item => {
             const nameEl = item.querySelector('.chat-thread-name');
@@ -1073,7 +1165,7 @@ function setupSubTabAndAccordionBindings() {
             const itemType = item.getAttribute('data-chat-type');
 
             const matchesSearch = name.includes(query) || preview.includes(query);
-            const matchesGroup = (itemType === activeGroup);
+            const matchesGroup = (activeGroup === 'All' || itemType === activeGroup);
 
             if (matchesSearch && matchesGroup) {
                 item.style.display = '';
@@ -1430,15 +1522,24 @@ function loadDiscussionMembers(discussionId) {
                 activeList.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:8px;">No active members.</div>';
             } else {
                 res.members.forEach(m => {
+                    const isAdmin = (window.VYALA_USER_ROLE === 'Admin');
                     const isMe = (m.id == meId);
-                    const removeBtnHtml = isMe ? '' : `<button class="btn btn-secondary btn-remove-member" data-emp-id="${m.id}" style="height:24px; padding:2px 6px; font-size:10px; color:#ef4444; border-color:#fca5a5;">Remove</button>`;
+                    const removeBtnHtml = isAdmin ? `<button class="btn btn-secondary btn-remove-member" data-emp-id="${m.id}" style="height:24px; padding:2px 6px; font-size:10px; color:#ef4444; border-color:#fca5a5;">Remove</button>` : '';
+                    const actionBtnsHtml = isMe ? '' : `
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <i data-lucide="message-square" class="member-action-msg" data-emp-id="${m.id}" data-emp-name="${escapeHtml(m.name)}" style="width:14px; height:14px; cursor:pointer; color:#3b82f6;" title="Direct Message"></i>
+                            <i data-lucide="phone" class="member-action-audio" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#10b981;" title="Audio Call"></i>
+                            <i data-lucide="video" class="member-action-video" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#8b5cf6;" title="Video Call"></i>
+                            ${removeBtnHtml}
+                        </div>
+                    `;
                     const itemHtml = `
                         <div style="display:flex; align-items:center; justify-content:space-between; padding:4px 0;">
                             <div style="display:flex; align-items:center; gap:8px;">
                                 <div style="background:#2563eb; color:#fff; width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700;">${m.avatar || m.name.substring(0,2).toUpperCase()}</div>
                                 <span style="font-size:12.5px; font-weight:600; color:var(--text-main);">${escapeHtml(m.name)}</span>
                             </div>
-                            ${removeBtnHtml}
+                            ${actionBtnsHtml}
                         </div>
                     `;
                     activeList.insertAdjacentHTML('beforeend', itemHtml);
@@ -1451,13 +1552,23 @@ function loadDiscussionMembers(discussionId) {
                 nonList.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:8px;">All team members are already added.</div>';
             } else {
                 res.non_members.forEach(m => {
+                    const isAdmin = (window.VYALA_USER_ROLE === 'Admin');
+                    const addBtnHtml = isAdmin ? `<button class="btn btn-primary btn-add-member" data-emp-id="${m.id}" style="height:24px; padding:2px 8px; font-size:10px; background:#10b981;">Add</button>` : '';
+                    const actionBtnsHtml = `
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <i data-lucide="message-square" class="member-action-msg" data-emp-id="${m.id}" data-emp-name="${escapeHtml(m.name)}" style="width:14px; height:14px; cursor:pointer; color:#3b82f6;" title="Direct Message"></i>
+                            <i data-lucide="phone" class="member-action-audio" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#10b981;" title="Audio Call"></i>
+                            <i data-lucide="video" class="member-action-video" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#8b5cf6;" title="Video Call"></i>
+                            ${addBtnHtml}
+                        </div>
+                    `;
                     const itemHtml = `
                         <div style="display:flex; align-items:center; justify-content:space-between; padding:4px 0;">
                             <div style="display:flex; align-items:center; gap:8px;">
                                 <div style="background:#64748b; color:#fff; width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700;">${m.avatar || m.name.substring(0,2).toUpperCase()}</div>
                                 <span style="font-size:12.5px; font-weight:600; color:var(--text-main);">${escapeHtml(m.name)}</span>
                             </div>
-                            <button class="btn btn-primary btn-add-member" data-emp-id="${m.id}" style="height:24px; padding:2px 8px; font-size:10px; background:#10b981;">Add</button>
+                            ${actionBtnsHtml}
                         </div>
                     `;
                     nonList.insertAdjacentHTML('beforeend', itemHtml);
@@ -1466,6 +1577,7 @@ function loadDiscussionMembers(discussionId) {
 
             // Bind member click actions
             bindDiscussionMembersActions(discussionId);
+            if (typeof lucide !== 'undefined') lucide.createIcons();
         } else {
             console.error('Error fetching members:', res.message);
         }
@@ -1477,24 +1589,41 @@ function loadDiscussionMembers(discussionId) {
 
 function bindDiscussionMembersActions(discussionId) {
     document.querySelectorAll('.btn-add-member').forEach(btn => {
-        btn.addEventListener('click', function() {
+        btn.addEventListener('click', async function() {
             const empId = btn.getAttribute('data-emp-id');
             const formData = new FormData();
             formData.append('discussion_id', discussionId);
             formData.append('employee_id', empId);
 
-            fetch('api.php?action=add_discussion_member', {
-                method: 'POST',
-                body: formData
-            })
-            .then(r => r.json())
-            .then(res => {
+            try {
+                // First add the member
+                const res = await fetch('api.php?action=add_discussion_member', { method: 'POST', body: formData }).then(r=>r.json());
+                
                 if (res.success) {
+                    // Then encrypt and store the group AES key for them
+                    if (window.currentAESKey) {
+                        const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${empId}`).then(r=>r.json());
+                        if (pkRes.success && pkRes.public_key) {
+                            // Re-export AES key because currentAESKey is a CryptoKey or raw string?
+                            // currentAESKey is raw string from decryptAESKeyWithRSA
+                            const encTarget = await encryptAESKeyWithRSA(window.currentAESKey, pkRes.public_key);
+                            
+                            const keyForm = new FormData();
+                            keyForm.append('discussion_id', discussionId);
+                            keyForm.append('employee_id', empId);
+                            keyForm.append('encrypted_key', encTarget);
+                            
+                            await fetch('api.php?action=store_discussion_key', { method: 'POST', body: keyForm });
+                        }
+                    }
                     loadDiscussionMembers(discussionId);
                 } else {
                     alert('Error: ' + res.message);
                 }
-            });
+            } catch (err) {
+                console.error(err);
+                alert('Failed to add member completely.');
+            }
         });
     });
 
@@ -1517,6 +1646,70 @@ function bindDiscussionMembersActions(discussionId) {
                     alert('Error: ' + res.message);
                 }
             });
+        });
+    });
+
+    document.querySelectorAll('.member-action-msg').forEach(btn => {
+        btn.addEventListener('click', async function() {
+            const empId = btn.getAttribute('data-emp-id');
+            const empName = btn.getAttribute('data-emp-name');
+            
+            // Generate a shared AES key for the DM
+            try {
+                const aesKeyObj = await generateAESKey();
+                const aesKeyBase64 = await exportAESKey(aesKeyObj);
+                
+                // Fetch target's public key
+                const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${empId}`).then(r=>r.json());
+                const targetPubKey = pkRes.public_key;
+                
+                // Encrypt AES key for self
+                const selfPubKey = localStorage.getItem('e2ee_public_key');
+                const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
+                
+                // Encrypt AES key for target
+                let encTarget = '';
+                if (targetPubKey) {
+                    encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
+                } else {
+                    // Fallback or warning if target has no key yet
+                    alert("User has not set up encryption keys. Cannot create secure chat.");
+                    return;
+                }
+                
+                const formData = new FormData();
+                formData.append('target_employee_id', empId);
+                formData.append('encrypted_key_self', encSelf);
+                formData.append('encrypted_key_target', encTarget);
+                
+                const res = await fetch('api.php?action=create_direct_message', { method: 'POST', body: formData }).then(r=>r.json());
+                
+                if (res.success) {
+                    alert('Direct message thread created/opened!');
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + res.message);
+                }
+            } catch(err) {
+                console.error("DM creation failed:", err);
+            }
+        });
+    });
+
+    const meId = window.VYALA_TASKPAD_DASHBOARD_DATA?.meId;
+    document.querySelectorAll('.member-action-audio').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const empId = btn.getAttribute('data-emp-id');
+            const roomId = "direct_" + Math.min(meId, empId) + "_" + Math.max(meId, empId);
+            window.open(`video_call.php?discussion_id=${roomId}&type=audio`, '_blank', 'width=800,height=600');
+        });
+    });
+
+    document.querySelectorAll('.member-action-video').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const empId = btn.getAttribute('data-emp-id');
+            const roomId = "direct_" + Math.min(meId, empId) + "_" + Math.max(meId, empId);
+            window.open(`video_call.php?discussion_id=${roomId}&type=video`, '_blank', 'width=800,height=600');
         });
     });
 }
@@ -2111,39 +2304,57 @@ function exportAttendanceToCSV() {
 // ==========================================================================
 // CHAT MESSAGES LOADING
 // ==========================================================================
-function loadThreadMessages(discussionId) {
+async function loadThreadMessages(discussionId) {
     const msgsContainer = document.querySelector('.chat-messages-container');
     if (!msgsContainer) return;
 
     msgsContainer.style.opacity = '0.5';
 
-    fetch(`api.php?action=get_messages&discussion_id=${discussionId}`)
-    .then(r => r.json())
-    .then(res => {
-        msgsContainer.style.opacity = '1';
-        if (res.success) {
-            renderChatMessages(res.messages, msgsContainer);
+    // Safely try to get AES key — but NEVER let this block message loading
+    try {
+        const keyRes = await fetch(`api.php?action=get_discussion_key&discussion_id=${discussionId}`).then(r=>r.json());
+        if (keyRes.success && keyRes.encrypted_key) {
+            try {
+                window.currentAESKey = await decryptAESKeyWithRSA(keyRes.encrypted_key);
+            } catch(keyErr) {
+                console.warn('Could not decrypt AES key, using plain text mode:', keyErr);
+                window.currentAESKey = null;
+            }
         } else {
-            console.error('Failed to load messages:', res.message);
+            window.currentAESKey = null;
         }
-    })
-    .catch(err => {
+    } catch(keyFetchErr) {
+        console.warn('Key fetch failed, using plain text mode:', keyFetchErr);
+        window.currentAESKey = null;
+    }
+
+    // Always load messages regardless of key status
+    try {
+        const msgRes = await fetch(`api.php?action=get_messages&discussion_id=${discussionId}`).then(r=>r.json());
         msgsContainer.style.opacity = '1';
-        console.error(err);
-    });
+        if (msgRes.success) {
+            renderChatMessages(msgRes.messages, msgsContainer);
+        } else {
+            msgsContainer.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:40px 20px;">Could not load messages: ' + (msgRes.message || 'Unknown error') + '</div>';
+        }
+    } catch(err) {
+        msgsContainer.style.opacity = '1';
+        msgsContainer.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:40px 20px;">Error loading messages. Please try again.</div>';
+        console.error('loadThreadMessages error:', err);
+    }
 }
 
-function renderChatMessages(messages, container) {
+async function renderChatMessages(messages, container) {
     const data = window.VYALA_TASKPAD_DASHBOARD_DATA;
     const meId = data.meId;
 
     container.innerHTML = '';
-    if (messages.length === 0) {
-        container.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px; font-size: 13px;">No messages in this discussion yet.</div>';
+    if (!messages || messages.length === 0) {
+        container.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px; font-size: 13px;">No messages in this discussion yet. Say hello! 👋</div>';
         return;
     }
 
-    messages.forEach(m => {
+    for (const m of messages) {
         const isMe = (m.sender_id == meId);
         const initials = m.sender_avatar || (m.sender_name || 'U').substring(0, 2).toUpperCase();
         
@@ -2166,25 +2377,95 @@ function renderChatMessages(messages, container) {
                 </a>
             `;
         }
+        
+        // Determine display message
+        let displayMsg = m.message || '';
+        if (window.currentAESKey && displayMsg.startsWith('{')) {
+            // Has AES key - try to decrypt AES payload
+            displayMsg = await decryptMessageAES(displayMsg, window.currentAESKey);
+        } else if (!window.currentAESKey && displayMsg.startsWith('{')) {
+            // No key, but JSON payload - try to extract as legacy or show indicator
+            try {
+                const parsed = JSON.parse(displayMsg);
+                if (parsed && typeof parsed === 'object' && parsed[meId]) {
+                    displayMsg = await decryptMessage(parsed[meId]);
+                } else if (parsed && parsed.ciphertext) {
+                    displayMsg = '[Encrypted Message - Key Required]';
+                }
+            } catch(e) {
+                // Not valid JSON, just show as-is
+            }
+        }
+        // Otherwise plain text - show as-is
+
+        const senderNameHtml = !isMe 
+            ? `<span style="font-size: 11px; font-weight: 600; color: var(--accent-color); margin-bottom: 3px; display: block;">${escapeHtml(m.sender_name || 'User')}</span>`
+            : '';
 
         const msgHtml = `
             <div class="chat-bubble-wrapper ${isMe ? 'outgoing' : ''}">
                 <div class="chat-bubble-avatar ${colorClass}">${initials}</div>
-                <div style="display: flex; flex-direction: column;">
+                <div style="display: flex; flex-direction: column; max-width: 75%;">
+                    ${senderNameHtml}
                     <div class="chat-bubble-content">
-                        ${escapeHtml(m.message)}
+                        ${escapeHtml(displayMsg)}
                         ${attachmentHtml}
                     </div>
-                    <span class="chat-bubble-time">${m.time_text}</span>
+                    <span class="chat-bubble-time">${m.time_text}${isMe ? ' ✓✓' : ''}</span>
                 </div>
             </div>
         `;
         container.insertAdjacentHTML('beforeend', msgHtml);
-    });
+    }
 
     lucide.createIcons();
     // Scroll to bottom
     container.scrollTop = container.scrollHeight;
+}
+
+// ==========================================================================
+// MESSAGE AUTO-POLLING (WhatsApp-style real-time)
+// ==========================================================================
+let _msgPollTimer = null;
+let _lastMsgCount = 0;
+
+function startMessagePolling(discussionId) {
+    stopMessagePolling();
+    _msgPollTimer = setInterval(async () => {
+        if (!window.currentActiveDiscussionId || window.currentActiveDiscussionId != discussionId) {
+            stopMessagePolling();
+            return;
+        }
+        try {
+            const res = await fetch(`api.php?action=get_messages&discussion_id=${discussionId}`).then(r => r.json());
+            if (res.success && res.messages) {
+                // Only re-render if count changed (new messages arrived)
+                if (res.messages.length !== _lastMsgCount) {
+                    _lastMsgCount = res.messages.length;
+                    const container = document.querySelector('.chat-messages-container');
+                    if (container) {
+                        const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 60;
+                        await renderChatMessages(res.messages, container);
+                        if (wasAtBottom) container.scrollTop = container.scrollHeight;
+                    }
+                }
+            }
+        } catch(e) { /* silent poll failure */ }
+    }, 3000);
+}
+
+function stopMessagePolling() {
+    if (_msgPollTimer) {
+        clearInterval(_msgPollTimer);
+        _msgPollTimer = null;
+    }
+    _lastMsgCount = 0;
+}
+
+// Reload discussion list (used after delete)
+function loadDiscussionsList() {
+    // Simple approach: reload the page to refresh the thread list
+    window.location.reload();
 }
 
 // ==========================================================================
@@ -2455,6 +2736,14 @@ document.addEventListener('click', function(e) {
 
         const modal = document.getElementById('modal-edit-employee');
         if (modal) modal.classList.add('active');
+        return;
+    }
+
+    // Direct Message click in Employees table
+    const msgBtn = e.target.closest('.btn-direct-message-user');
+    if (msgBtn) {
+        const userId = msgBtn.getAttribute('data-user-id');
+        startDirectChatWithUser(userId);
         return;
     }
 

@@ -423,12 +423,13 @@ try {
         } else if ($action === 'create_discussion') {
             $title = trim($_POST['title'] ?? '');
             $type = trim($_POST['type'] ?? 'General');
+            $encryptedKeySelf = trim($_POST['encrypted_key_self'] ?? '');
 
             if (empty($title)) {
                 throw new Exception("Discussion Title is required.");
             }
 
-            $stmt = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`, `org_id`) VALUES (?, ?, ?, ?)");
+            $stmt = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`, `org_id`, `is_direct`) VALUES (?, ?, ?, ?, 0)");
             $stmt->execute([$title, $type, date('d M Y'), $jwtPayload['org_id']]);
             $discId = $pdo->lastInsertId();
             $meId = $jwtPayload['id'];
@@ -437,7 +438,94 @@ try {
             $stmtMem = $pdo->prepare("INSERT INTO `discussion_members` (`discussion_id`, `employee_id`) VALUES (?, ?)");
             $stmtMem->execute([$discId, $meId]);
 
+            if (!empty($encryptedKeySelf)) {
+                $stmtKey = $pdo->prepare("INSERT INTO `discussion_keys` (`discussion_id`, `employee_id`, `encrypted_key`) VALUES (?, ?, ?)");
+                $stmtKey->execute([$discId, $meId, $encryptedKeySelf]);
+            }
+
             $response = ['success' => true, 'message' => 'Discussion channel created successfully', 'discussion_id' => $discId];
+        } else if ($action === 'create_direct_message') {
+            $targetEmpId = (int)($_POST['target_employee_id'] ?? 0);
+            $encKeySelf = trim($_POST['encrypted_key_self'] ?? '');
+            $encKeyTarget = trim($_POST['encrypted_key_target'] ?? '');
+            $meId = $jwtPayload['id'];
+
+            if (!$targetEmpId || empty($encKeySelf) || empty($encKeyTarget)) {
+                throw new Exception("Target employee and encryption keys are required.");
+            }
+
+            // Check if DM already exists
+            $checkStmt = $pdo->prepare("
+                SELECT d.id FROM discussions d
+                JOIN discussion_members dm1 ON d.id = dm1.discussion_id AND dm1.employee_id = ?
+                JOIN discussion_members dm2 ON d.id = dm2.discussion_id AND dm2.employee_id = ?
+                WHERE d.is_direct = 1
+                LIMIT 1
+            ");
+            $checkStmt->execute([$meId, $targetEmpId]);
+            $existingId = $checkStmt->fetchColumn();
+
+            if ($existingId) {
+                $response = ['success' => true, 'message' => 'Direct message already exists', 'discussion_id' => $existingId];
+            } else {
+                // Get target employee name
+                $tgtName = $pdo->query("SELECT name FROM employees WHERE id = $targetEmpId")->fetchColumn();
+                $myName = $jwtPayload['name'];
+                
+                // Create DM discussion. We use a placeholder title, the frontend will show the other person's name
+                $stmt = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`, `org_id`, `is_direct`) VALUES (?, 'Direct', ?, ?, 1)");
+                $stmt->execute(["DM: $myName & $tgtName", date('d M Y'), $jwtPayload['org_id']]);
+                $discId = $pdo->lastInsertId();
+
+                // Add members
+                $stmtMem = $pdo->prepare("INSERT INTO `discussion_members` (`discussion_id`, `employee_id`) VALUES (?, ?)");
+                $stmtMem->execute([$discId, $meId]);
+                $stmtMem->execute([$discId, $targetEmpId]);
+
+                // Add keys
+                $stmtKey = $pdo->prepare("INSERT INTO `discussion_keys` (`discussion_id`, `employee_id`, `encrypted_key`) VALUES (?, ?, ?)");
+                $stmtKey->execute([$discId, $meId, $encKeySelf]);
+                $stmtKey->execute([$discId, $targetEmpId, $encKeyTarget]);
+
+                $response = ['success' => true, 'message' => 'Direct message created successfully', 'discussion_id' => $discId];
+            }
+        } else if ($action === 'save_public_key') {
+            $pubKey = trim($_POST['public_key'] ?? '');
+            $meId = $jwtPayload['id'];
+            if (!empty($pubKey)) {
+                $pdo->prepare("UPDATE `employees` SET `public_key` = ? WHERE id = ?")->execute([$pubKey, $meId]);
+            }
+            $response = ['success' => true];
+        } else if ($action === 'get_employee_public_key') {
+            $empId = (int)($_REQUEST['employee_id'] ?? 0);
+            $pubKey = $pdo->query("SELECT public_key FROM employees WHERE id = $empId")->fetchColumn();
+            $response = ['success' => true, 'public_key' => $pubKey];
+        } else if ($action === 'store_discussion_key') {
+            $discId = (int)($_POST['discussion_id'] ?? 0);
+            $targetEmpId = (int)($_POST['employee_id'] ?? 0);
+            $encKey = trim($_POST['encrypted_key'] ?? '');
+            if ($discId && $targetEmpId && $encKey) {
+                $pdo->prepare("INSERT IGNORE INTO `discussion_keys` (`discussion_id`, `employee_id`, `encrypted_key`) VALUES (?, ?, ?)")->execute([$discId, $targetEmpId, $encKey]);
+            }
+            $response = ['success' => true];
+        } else if ($action === 'get_discussion_members') {
+            $discId = (int)($_REQUEST['discussion_id'] ?? 0);
+            if (!$discId) throw new Exception("Discussion ID required.");
+            $stmt = $pdo->prepare("
+                SELECT e.id, e.name, e.avatar, e.role
+                FROM `discussion_members` dm
+                JOIN `employees` e ON dm.employee_id = e.id
+                WHERE dm.discussion_id = ?
+            ");
+            $stmt->execute([$discId]);
+            $members = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $response = ['success' => true, 'members' => $members];
+        } else if ($action === 'get_discussion_key') {
+            $discId = (int)($_REQUEST['discussion_id'] ?? 0);
+            $meId = $jwtPayload['id'];
+            $encKey = $pdo->prepare("SELECT encrypted_key FROM discussion_keys WHERE discussion_id = ? AND employee_id = ?");
+            $encKey->execute([$discId, $meId]);
+            $response = ['success' => true, 'encrypted_key' => $encKey->fetchColumn()];
         } else if ($action === 'send_message') {
             $discId = (int) ($_POST['discussion_id'] ?? 0);
             $message = trim($_POST['message'] ?? '');
@@ -501,6 +589,68 @@ try {
             }
 
             $response = ['success' => true, 'messages' => $messages];
+        } else if ($action === 'start_call') {
+            $discId = (int) ($_POST['discussion_id'] ?? 0);
+            $type = trim($_POST['type'] ?? 'video');
+            $meId = $jwtPayload['id'];
+            
+            if (!$discId) throw new Exception("Discussion ID required.");
+
+            // End any existing calls for this discussion
+            $pdo->prepare("UPDATE calls SET status = 'ended' WHERE discussion_id = ? AND status != 'ended'")->execute([$discId]);
+
+            // Start new call
+            $stmt = $pdo->prepare("INSERT INTO calls (discussion_id, caller_id, type, status) VALUES (?, ?, ?, 'ringing')");
+            $stmt->execute([$discId, $meId, $type]);
+            $callId = $pdo->lastInsertId();
+
+            $response = ['success' => true, 'call_id' => $callId];
+        } else if ($action === 'check_calls') {
+            $meId = $jwtPayload['id'];
+            // Check for ringing calls in discussions the user is a part of
+            $stmt = $pdo->prepare("
+                SELECT c.id as call_id, c.discussion_id, c.caller_id, c.type, d.title as discussion_title, e.name as caller_name, e.avatar as caller_avatar, d.is_direct
+                FROM calls c
+                JOIN discussion_members dm ON c.discussion_id = dm.discussion_id
+                JOIN discussions d ON c.discussion_id = d.id
+                JOIN employees e ON c.caller_id = e.id
+                WHERE dm.employee_id = ? AND c.caller_id != ? AND (c.status = 'ringing' OR c.status = 'active')
+                ORDER BY c.id DESC LIMIT 1
+            ");
+            $stmt->execute([$meId, $meId]);
+            $call = $stmt->fetch(PDO::FETCH_ASSOC);
+            $response = ['success' => true, 'call' => $call];
+        } else if ($action === 'delete_discussion') {
+            $discId = (int)($_POST['discussion_id'] ?? 0);
+            $meId = $jwtPayload['id'];
+            
+            if (!$discId) {
+                throw new Exception("Discussion ID is required.");
+            }
+            
+            // Allow Admin or the Creator (check logic here, for now any member can delete)
+            $checkMem = $pdo->prepare("SELECT COUNT(*) FROM `discussion_members` WHERE discussion_id = ? AND employee_id = ?");
+            $checkMem->execute([$discId, $meId]);
+            if ($checkMem->fetchColumn() == 0 && $jwtPayload['role'] !== 'Admin') {
+                throw new Exception("You do not have permission to delete this discussion.");
+            }
+            
+            // Delete associated data
+            $pdo->prepare("DELETE FROM `discussion_messages` WHERE discussion_id = ?")->execute([$discId]);
+            $pdo->prepare("DELETE FROM `discussion_members` WHERE discussion_id = ?")->execute([$discId]);
+            $pdo->prepare("DELETE FROM `discussion_keys` WHERE discussion_id = ?")->execute([$discId]);
+            $pdo->prepare("DELETE FROM `calls` WHERE discussion_id = ?")->execute([$discId]);
+            $pdo->prepare("DELETE FROM `discussions` WHERE id = ?")->execute([$discId]);
+            
+            $response = ['success' => true];
+        } else if ($action === 'answer_call') {
+            $callId = (int)($_POST['call_id'] ?? 0);
+            $pdo->prepare("UPDATE calls SET status = 'active' WHERE id = ?")->execute([$callId]);
+            $response = ['success' => true];
+        } else if ($action === 'end_call') {
+            $discId = (int)($_POST['discussion_id'] ?? 0);
+            $pdo->prepare("UPDATE calls SET status = 'ended' WHERE discussion_id = ? AND status != 'ended'")->execute([$discId]);
+            $response = ['success' => true];
         } else if ($action === 'upload_document') {
             $meId = $jwtPayload['id'];
             $projectId = isset($_POST['project_id']) && $_POST['project_id'] !== '' ? (int) $_POST['project_id'] : null;
@@ -717,6 +867,9 @@ try {
                 'non_members' => $nonMembers
             ];
         } else if ($action === 'add_discussion_member') {
+            if ($jwtPayload['role'] !== 'Admin') {
+                throw new Exception("Only Admin can add members to the group discussion.");
+            }
             $discId = (int)($_POST['discussion_id'] ?? 0);
             $empId = (int)($_POST['employee_id'] ?? 0);
             if (!$discId || !$empId) {
@@ -726,6 +879,9 @@ try {
             $stmt->execute([$discId, $empId]);
             $response = ['success' => true, 'message' => 'Member added successfully'];
         } else if ($action === 'remove_discussion_member') {
+            if ($jwtPayload['role'] !== 'Admin') {
+                throw new Exception("Only Admin can remove members from the group discussion.");
+            }
             $discId = (int)($_POST['discussion_id'] ?? 0);
             $empId = (int)($_POST['employee_id'] ?? 0);
             if (!$discId || !$empId) {
@@ -1348,7 +1504,6 @@ try {
                 'projects'   => $stageProjects
             ];
         }
-<<<<<<< HEAD
     
         // ==========================================
         // SURVEY MANAGEMENT MODULE
@@ -1538,10 +1693,30 @@ try {
             exit;
         }
 
-} catch (Throwable $e) {
-=======
-
-        if ($action === 'update_task_details') {
+        if ($action === 'save_public_key') {
+            $pubKey = trim($_POST['public_key'] ?? '');
+            $meId = (int)($jwtPayload['id'] ?? 0);
+            if ($pubKey && $meId) {
+                $stmt = $pdo->prepare("UPDATE employees SET public_key = ? WHERE id = ?");
+                $stmt->execute([$pubKey, $meId]);
+            }
+            $response = ['success' => true];
+        } else if ($action === 'get_public_keys') {
+            $userIdsRaw = $_GET['user_ids'] ?? '';
+            $ids = array_filter(array_map('intval', explode(',', $userIdsRaw)));
+            if (empty($ids)) throw new Exception("No user IDs provided.");
+            
+            $inQuery = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = $pdo->prepare("SELECT id, public_key FROM employees WHERE id IN ($inQuery)");
+            $stmt->execute($ids);
+            $keys = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            $keyMap = [];
+            foreach($keys as $k) {
+                if($k['public_key']) $keyMap[$k['id']] = $k['public_key'];
+            }
+            $response = ['success' => true, 'keys' => $keyMap];
+        } else if ($action === 'update_task_details') {
             $taskId = (int)($_POST['task_id'] ?? 0);
             $newDueDate = trim($_POST['due_date'] ?? '');
             $newEstDays = (int)($_POST['estimated_duration'] ?? 0);
@@ -1572,7 +1747,6 @@ try {
             ];
         }
     } catch (Throwable $e) {
->>>>>>> c6c782ce6a9b18ee5a8a6f67c911f663b2909c7e
         $response = [
             'success' => false,
             'message' => $e->getMessage()

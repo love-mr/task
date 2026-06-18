@@ -33,6 +33,8 @@ try {
         `description` TEXT DEFAULT NULL,
         `client_id` INT DEFAULT NULL,
         `status` VARCHAR(50) NOT NULL DEFAULT 'Active',
+        `pipeline_stage` VARCHAR(100) DEFAULT NULL,
+        `service_type` VARCHAR(100) DEFAULT NULL,
         `priority` VARCHAR(50) NOT NULL DEFAULT 'Medium',
         `created_by` INT DEFAULT NULL,
         `assigned_to` INT DEFAULT NULL,
@@ -55,6 +57,7 @@ try {
         `emp_code` VARCHAR(50) DEFAULT NULL UNIQUE,
         `avatar` VARCHAR(255) DEFAULT NULL,
         `status` VARCHAR(50) NOT NULL DEFAULT 'Pending',
+        `public_key` TEXT DEFAULT NULL,
         `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB;");
 

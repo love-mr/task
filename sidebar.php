@@ -61,20 +61,12 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
                         <span>Projects</span>
                     </a>
                 </li>
-<<<<<<< HEAD
-=======
-
->>>>>>> c6c782ce6a9b18ee5a8a6f67c911f663b2909c7e
                 <li class="nav-item" data-tab="tasks">
                     <a href="#tasks">
                         <i data-lucide="check-square"></i>
                         <span>Tasks & Reminders</span>
                     </a>
                 </li>
-<<<<<<< HEAD
-=======
-
->>>>>>> c6c782ce6a9b18ee5a8a6f67c911f663b2909c7e
                 <li class="nav-item" data-tab="layout">
                     <a href="#layout">
                         <i data-lucide="layout"></i>
@@ -117,8 +109,7 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
                         <span>Documents</span>
                     </a>
                 </li>
-<<<<<<< HEAD
-=======
+
                 <li class="nav-item" data-tab="discussion">
                     <a href="#discussion">
                         <i data-lucide="message-square"></i>
@@ -131,7 +122,7 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
                         <span>Notes</span>
                     </a>
                 </li>
->>>>>>> c6c782ce6a9b18ee5a8a6f67c911f663b2909c7e
+
                 <li class="nav-item" data-tab="surveymanagement">
                     <a href="#surveymanagement">
                         <i data-lucide="clipboard-list"></i>
