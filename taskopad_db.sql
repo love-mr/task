@@ -62,6 +62,7 @@ CREATE TABLE `employees` (
   `emp_code` VARCHAR(50) DEFAULT NULL,
   `avatar` VARCHAR(255) DEFAULT NULL,
   `status` VARCHAR(50) NOT NULL DEFAULT 'Active',
+  `public_key` TEXT DEFAULT NULL,
   `org_id` INT NOT NULL DEFAULT 1,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
@@ -298,6 +299,78 @@ CREATE TABLE `land_surveys` (
   `document_path` VARCHAR(500) DEFAULT NULL,
   `org_id` INT NOT NULL DEFAULT 1,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- Table structure for table `goal_tracker`
+DROP TABLE IF EXISTS `goal_tracker`;
+CREATE TABLE `goal_tracker` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `org_id` INT NOT NULL DEFAULT 1,
+  `title` VARCHAR(255) NOT NULL,
+  `description` TEXT DEFAULT NULL,
+  `start_date` DATE NOT NULL,
+  `target_date` DATE NOT NULL,
+  `actual_completion_date` DATE DEFAULT NULL,
+  `progress` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  `status` ENUM('Not Started','In Progress','Completed','Overdue') NOT NULL DEFAULT 'Not Started',
+  `created_by` INT DEFAULT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (`org_id`),
+  INDEX (`status`)
+) ENGINE=InnoDB;
+
+-- Table structure for table `document_logs`
+DROP TABLE IF EXISTS `document_logs`;
+CREATE TABLE `document_logs` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `doc_id` INT NOT NULL,
+  `employee_id` INT DEFAULT NULL,
+  `action` ENUM('upload','download','delete','edit','view') NOT NULL DEFAULT 'upload',
+  `ip_address` VARCHAR(45) DEFAULT NULL,
+  `org_id` INT NOT NULL DEFAULT 1,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (`doc_id`),
+  INDEX (`employee_id`),
+  INDEX (`org_id`)
+) ENGINE=InnoDB;
+
+-- Table structure for table `survey_management`
+DROP TABLE IF EXISTS `survey_management`;
+CREATE TABLE `survey_management` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `survey_number` VARCHAR(100) NOT NULL,
+  `sub_division_number` VARCHAR(100) DEFAULT NULL,
+  `owner_name` VARCHAR(255) DEFAULT NULL,
+  `village_name` VARCHAR(255) DEFAULT NULL,
+  `taluk` VARCHAR(255) DEFAULT NULL,
+  `district` VARCHAR(255) DEFAULT NULL,
+  `land_type` VARCHAR(100) DEFAULT NULL,
+  `total_area` DECIMAL(10,2) DEFAULT 0.00,
+  `patta_number` VARCHAR(100) DEFAULT NULL,
+  `fmb_number` VARCHAR(100) DEFAULT NULL,
+  `latitude` VARCHAR(50) DEFAULT NULL,
+  `longitude` VARCHAR(50) DEFAULT NULL,
+  `survey_date` DATE DEFAULT NULL,
+  `status` ENUM('Pending','Verified','Rejected') NOT NULL DEFAULT 'Pending',
+  `remarks` TEXT DEFAULT NULL,
+  `document_path` VARCHAR(500) DEFAULT NULL,
+  `org_id` INT NOT NULL DEFAULT 1,
+  `is_archived` TINYINT(1) NOT NULL DEFAULT 0,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (`org_id`),
+  INDEX (`status`)
+) ENGINE=InnoDB;
+
+-- Table structure for table `survey_history`
+DROP TABLE IF EXISTS `survey_history`;
+CREATE TABLE `survey_history` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `survey_id` INT NOT NULL,
+  `action` VARCHAR(255) NOT NULL,
+  `performed_by` VARCHAR(255) DEFAULT NULL,
+  `details` TEXT DEFAULT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (`survey_id`)
 ) ENGINE=InnoDB;
 
 

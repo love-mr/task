@@ -279,6 +279,43 @@ try {
         INDEX (`org_id`)
     ) ENGINE=InnoDB;");
 
+    // Create survey_management table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `survey_management` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `survey_number` VARCHAR(100) NOT NULL,
+        `sub_division_number` VARCHAR(100) DEFAULT NULL,
+        `owner_name` VARCHAR(255) DEFAULT NULL,
+        `village_name` VARCHAR(255) DEFAULT NULL,
+        `taluk` VARCHAR(255) DEFAULT NULL,
+        `district` VARCHAR(255) DEFAULT NULL,
+        `land_type` VARCHAR(100) DEFAULT NULL,
+        `total_area` DECIMAL(10,2) DEFAULT 0.00,
+        `patta_number` VARCHAR(100) DEFAULT NULL,
+        `fmb_number` VARCHAR(100) DEFAULT NULL,
+        `latitude` VARCHAR(50) DEFAULT NULL,
+        `longitude` VARCHAR(50) DEFAULT NULL,
+        `survey_date` DATE DEFAULT NULL,
+        `status` ENUM('Pending','Verified','Rejected') NOT NULL DEFAULT 'Pending',
+        `remarks` TEXT DEFAULT NULL,
+        `document_path` VARCHAR(500) DEFAULT NULL,
+        `org_id` INT NOT NULL DEFAULT 1,
+        `is_archived` TINYINT(1) NOT NULL DEFAULT 0,
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (`org_id`),
+        INDEX (`status`)
+    ) ENGINE=InnoDB;");
+
+    // Create survey_history table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `survey_history` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `survey_id` INT NOT NULL,
+        `action` VARCHAR(255) NOT NULL,
+        `performed_by` VARCHAR(255) DEFAULT NULL,
+        `details` TEXT DEFAULT NULL,
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (`survey_id`)
+    ) ENGINE=InnoDB;");
+
 } catch (PDOException $e) {
     die("Database Connection failed: " . $e->getMessage());
 }
