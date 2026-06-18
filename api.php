@@ -1460,16 +1460,12 @@ try {
                 $stmt->execute([$targetDate, $projectId]);
             }
 
-<<<<<<< HEAD
             // Fetch assignee names for response
             $empNameMap = [];
             $empRows = $pdo->query("SELECT id, name FROM employees")->fetchAll(PDO::FETCH_ASSOC);
             foreach ($empRows as $er) { $empNameMap[$er['id']] = $er['name']; }
 
             $taskStartDate = $startDate;
-=======
-            $currentDate = $startDate;
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
             $prevTaskId = null;
             $createdTasks = [];
 
@@ -1482,11 +1478,7 @@ try {
                 $days = (int)($t['days'] ?? 1);
                 if ($days < 1) $days = 1;
 
-<<<<<<< HEAD
                 $taskEndDate = date('Y-m-d', strtotime("$taskStartDate + $days days"));
-=======
-                $currentDate = date('Y-m-d', strtotime("$currentDate + $days days"));
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
 
                 $stmt = $pdo->prepare("INSERT INTO `tasks` 
                     (`title`, `description`, `project_id`, `assigned_to`, `priority`, `status`, `org_id`, 
@@ -1502,11 +1494,7 @@ try {
                     $days,
                     (int)$t['order'],
                     $prevTaskId,
-<<<<<<< HEAD
                     $taskEndDate
-=======
-                    $currentDate
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
                 ]);
                 $prevTaskId = $pdo->lastInsertId();
 
@@ -1942,10 +1930,6 @@ try {
                 'projects'   => $stageProjects
             ];
         }
-<<<<<<< HEAD
-
-        if ($action === 'update_task_details') {
-=======
     
         // ==========================================
         // SURVEY MANAGEMENT MODULE
@@ -2159,7 +2143,6 @@ try {
             }
             $response = ['success' => true, 'keys' => $keyMap];
         } else if ($action === 'update_task_details') {
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
             $taskId = (int)($_POST['task_id'] ?? 0);
             $newDueDate = trim($_POST['due_date'] ?? '');
             $newEstDays = (int)($_POST['estimated_duration'] ?? 0);

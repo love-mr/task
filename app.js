@@ -3248,17 +3248,10 @@ function setupLayoutModule() {
                         <input type="text" class="form-control lq-title" placeholder="e.g. Initial Survey" style="height:34px;">
                     </div>
                     <div class="form-group" style="flex: 1.5; margin-bottom: 0; position: relative;">
-<<<<<<< HEAD
                         <label class="form-label" style="font-size: 11px;">Assignee</label>
                         <input type="text" class="form-control lq-assignee-input" placeholder="Type name..." autocomplete="off" style="height:34px;">
                         <input type="hidden" class="lq-assignee-val">
                         <div class="lq-assignee-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.12); max-height: 160px; overflow-y: auto; z-index: 9999;"></div>
-=======
-                        <label class="form-label" style="font-size: 11px;">Assignee (Emp ID / Name)</label>
-                        <input type="text" class="form-control lq-assignee-input" placeholder="Type name..." autocomplete="off">
-                        <input type="hidden" class="lq-assignee-val">
-                        <div class="lq-assignee-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); max-height: 180px; overflow-y: auto; z-index: 9999;"></div>
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
                     </div>
                     <div class="form-group" style="flex: 1; margin-bottom: 0;">
                         <label class="form-label" style="font-size: 11px;">Priority</label>
@@ -3277,11 +3270,7 @@ function setupLayoutModule() {
             wrapper.insertAdjacentHTML('beforeend', html);
         }
 
-<<<<<<< HEAD
         // Setup autocomplete dropdown events
-=======
-        // Setup dropdown events
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
         const rows = wrapper.querySelectorAll('.layout-task-row');
         const employeesList = window.VYALA_TASKPAD_DASHBOARD_DATA?.employees || [];
 
@@ -3293,38 +3282,17 @@ function setupLayoutModule() {
             function renderDropdown(filterText = '') {
                 const query = filterText.toLowerCase().trim();
                 const filtered = employeesList.filter(e => e.name.toLowerCase().includes(query));
-<<<<<<< HEAD
-=======
 
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
                 dropdown.innerHTML = '';
                 if (filtered.length === 0) {
                     dropdown.innerHTML = '<div style="padding: 8px 12px; color: #94a3b8; font-size: 12px;">No matches</div>';
                 } else {
                     filtered.forEach(e => {
                         const item = document.createElement('div');
-<<<<<<< HEAD
                         item.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:12px;color:#334155;border-bottom:1px solid #f1f5f9;';
                         item.innerText = e.name;
                         item.addEventListener('mouseenter', () => item.style.background = '#f1f5f9');
                         item.addEventListener('mouseleave', () => item.style.background = 'transparent');
-=======
-                        item.className = 'dropdown-item';
-                        item.style.padding = '8px 12px';
-                        item.style.cursor = 'pointer';
-                        item.style.fontSize = '12px';
-                        item.style.color = '#334155';
-                        item.style.borderBottom = '1px solid #f1f5f9';
-                        item.innerText = e.name;
-                        
-                        item.addEventListener('mouseenter', () => {
-                            item.style.background = '#f1f5f9';
-                        });
-                        item.addEventListener('mouseleave', () => {
-                            item.style.background = 'transparent';
-                        });
-
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
                         item.addEventListener('mousedown', (evt) => {
                             evt.preventDefault();
                             input.value = e.name;
@@ -3336,28 +3304,9 @@ function setupLayoutModule() {
                 }
             }
 
-<<<<<<< HEAD
             input.addEventListener('focus', () => { renderDropdown(input.value); dropdown.style.display = 'block'; });
             input.addEventListener('input', () => { hidden.value = ''; renderDropdown(input.value); dropdown.style.display = 'block'; });
             input.addEventListener('blur', () => { setTimeout(() => { dropdown.style.display = 'none'; }, 150); });
-=======
-            input.addEventListener('focus', () => {
-                renderDropdown(input.value);
-                dropdown.style.display = 'block';
-            });
-
-            input.addEventListener('input', () => {
-                hidden.value = '';
-                renderDropdown(input.value);
-                dropdown.style.display = 'block';
-            });
-
-            input.addEventListener('blur', () => {
-                setTimeout(() => {
-                    dropdown.style.display = 'none';
-                }, 150);
-            });
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
         });
 
         container.style.display = 'block';
@@ -3383,15 +3332,7 @@ function setupLayoutModule() {
             if (!assignee && assigneeInput) {
                 const name = assigneeInput.value.toLowerCase().trim();
                 const matched = employeesList.find(e => e.name.toLowerCase() === name);
-<<<<<<< HEAD
                 assignee = matched ? matched.id : name;
-=======
-                if (matched) {
-                    assignee = matched.id;
-                } else {
-                    assignee = name;
-                }
->>>>>>> 5d6639863b2014e0b32a7d0fa18a20ed074cf549
             }
 
             sequenceData.push({
