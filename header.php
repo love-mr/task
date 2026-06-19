@@ -1,4 +1,4 @@
-﻿<!-- header.php -->
+<!-- header.php -->
 <?php
 require_once 'db.php';
 require_once 'jwt.php';
@@ -21,6 +21,7 @@ if ($jwtPayload) {
         $meRole = $me['role'];
         $meCode = $me['emp_code'] ?: 'T-130555';
         $meAvatar = $me['avatar'] ?: substr($meName, 0, 2);
+        $meOrgId = (int)$me['org_id']; // Fetch dynamically from database to avoid stale cookie org_id
     }
 }
 
@@ -47,6 +48,23 @@ try {
             </div>
             <span class="logo-task">Vyala Software <span class="logo-pad">TaskPad</span></span>
         </div>
+        <?php if (isset($jwtPayload['role']) && $jwtPayload['role'] === 'Super Admin'): ?>
+            <div class="org-switcher-wrapper" style="margin-left: 20px; display: flex; align-items: center; gap: 8px;">
+                <i data-lucide="globe" style="width: 16px; height: 16px; color: #64748b;"></i>
+                <select id="super-org-switcher" onchange="window.location.href='dashboard.php?switch_org_id='+this.value" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 12px; font-family: inherit; font-size: 13px; font-weight: 500; color: #0f172a; outline: none; cursor: pointer; transition: all 0.2s;">
+                    <option value="0" <?= $meOrgId === 0 ? 'selected' : '' ?>>Global View (All Orgs)</option>
+                    <?php
+                    try {
+                        $stmtOrgs = $pdo->query("SELECT id, name FROM `organizations` ORDER BY name ASC");
+                        while ($org = $stmtOrgs->fetch(PDO::FETCH_ASSOC)) {
+                            $selected = ($meOrgId === (int)$org['id']) ? 'selected' : '';
+                            echo '<option value="' . $org['id'] . '" ' . $selected . '>' . htmlspecialchars($org['name']) . '</option>';
+                        }
+                    } catch (PDOException $e) {}
+                    ?>
+                </select>
+            </div>
+        <?php endif; ?>
         <h2 class="page-title-hidden" style="display:none;">Dashboard</h2>
     </div>
 
@@ -111,10 +129,7 @@ try {
         <!-- User Profile (SJ, SELVAKUMAR J) -->
         <div class="user-profile-wrapper" style="position: relative; display: flex; align-items: center;">
             <div class="user-profile" id="profile-toggle">
-                <div class="avatar-initials"
-                    style="background-color: #dc2626; color: white; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; font-family: var(--font-sans);">
-                    <?= htmlspecialchars($meAvatar) ?>
-                </div>
+                <?= render_avatar($meAvatar, $meName, 'background-color: #dc2626; color: white; width: 34px; height: 34px; font-weight: 700; font-size: 13px; font-family: var(--font-sans);', 'avatar-initials') ?>
                 <div class="user-info">
                     <span class="user-name"><?= htmlspecialchars($meName) ?></span>
                     <span class="user-role"><?= htmlspecialchars($meCode) ?></span>

@@ -14,9 +14,64 @@ if (!$jwtPayload) {
     exit;
 }
 
+// Dynamically fetch current user info from DB to avoid stale JWT data
+try {
+    $stmtUser = $pdo->prepare("SELECT org_id, role, name, status FROM `employees` WHERE id = ?");
+    $stmtUser->execute([$jwtPayload['id']]);
+    $dbUser = $stmtUser->fetch(PDO::FETCH_ASSOC);
+    if ($dbUser) {
+        $jwtPayload['org_id'] = (int)$dbUser['org_id'];
+        $jwtPayload['role'] = $dbUser['role'];
+        $jwtPayload['name'] = $dbUser['name'];
+        if ($dbUser['status'] === 'Deactivated' || $dbUser['status'] === 'Pending') {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Your account is deactivated or pending approval.']);
+            exit;
+        }
+    }
+} catch (PDOException $ex) {}
+
+// Validate organization status for API requests
+$meOrgId = (int)($jwtPayload['org_id'] ?? 0);
+if ($meOrgId > 0 && isset($jwtPayload['role']) && $jwtPayload['role'] !== 'Super Admin') {
+    try {
+        $stmtOrgCheck = $pdo->prepare("SELECT status FROM `organizations` WHERE id = ?");
+        $stmtOrgCheck->execute([$meOrgId]);
+        $orgStatus = $stmtOrgCheck->fetchColumn();
+        if ($orgStatus !== 'Active') {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Your organization is not yet approved by the administrator.']);
+            exit;
+        }
+    } catch (PDOException $ex) {}
+}
+
 $response = ['success' => false, 'message' => 'Invalid action'];
 
 $action = $_REQUEST['action'] ?? '';
+
+// Global Middleware check for Role-based API access
+$userRole = $jwtPayload['role'] ?? '';
+
+// Platform-level org management is restricted to Admin and Super Admin only
+$platformOnlyActions = ['approve_org', 'reject_org', 'delete_org'];
+if (in_array($action, $platformOnlyActions)) {
+    if ($userRole !== 'Admin' && $userRole !== 'Super Admin') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Forbidden: This action requires platform administrator privileges.']);
+        exit;
+    }
+}
+
+// Restriction for employee management: only Admin, Project Lead and Super Admin can manage employees
+$employeeMgmtActions = ['create_employee', 'update_employee', 'delete_employee', 'approve_employee', 'toggle_user_status'];
+if (in_array($action, $employeeMgmtActions)) {
+    if ($userRole !== 'Admin' && $userRole !== 'Project Lead' && $userRole !== 'Super Admin') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Forbidden: Only Organization Admin or Super Admin can manage employees.']);
+        exit;
+    }
+}
 
 try {
     if ($action === 'create_task') {
@@ -93,6 +148,61 @@ try {
                 'success' => true,
                 'message' => 'Project created successfully'
             ];
+        } else if ($action === 'delete_project') {
+            $meRole = $jwtPayload['role'] ?? '';
+            if ($meRole !== 'Admin' && $meRole !== 'Project Lead' && $meRole !== 'Super Admin') {
+                throw new Exception("Only organization administrators can delete projects.");
+            }
+            $projectId = (int)($_POST['id'] ?? 0);
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
+            if (!$projectId) throw new Exception("Invalid Project ID.");
+
+            // Check if project belongs to this org
+            $checkStmt = $pdo->prepare("SELECT name FROM `projects` WHERE id = ? AND org_id = ?");
+            $checkStmt->execute([$projectId, $meOrgId]);
+            $projName = $checkStmt->fetchColumn();
+            if (!$projName) throw new Exception("Project not found in your organization.");
+
+            // Delete project
+            $pdo->prepare("DELETE FROM `projects` WHERE id = ?")->execute([$projectId]);
+            // Delete project members
+            $pdo->prepare("DELETE FROM `project_members` WHERE project_id = ?")->execute([$projectId]);
+            // Delete project tasks
+            $pdo->prepare("DELETE FROM `tasks` WHERE project_id = ?")->execute([$projectId]);
+
+            // Log activity
+            $actStmt = $pdo->prepare("INSERT INTO `activities` (`action`, `details`, `project_name`, `logged_date`, `org_id`) VALUES (?, ?, ?, ?, ?)");
+            $actStmt->execute(["Deleted Project : \"$projName\"", "Delete Project", $projName, date('d M, Y g:i A'), $meOrgId]);
+
+            $response = ['success' => true, 'message' => 'Project deleted successfully'];
+
+        } else if ($action === 'update_project_status') {
+            $meRole = $jwtPayload['role'] ?? '';
+            if ($meRole !== 'Admin' && $meRole !== 'Project Lead' && $meRole !== 'Super Admin') {
+                throw new Exception("Only organization administrators can update project status.");
+            }
+            $projectId = (int)($_POST['id'] ?? 0);
+            $status = trim($_POST['status'] ?? '');
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
+
+            if (!$projectId || empty($status)) throw new Exception("Project ID and status are required.");
+
+            // Check if project belongs to this org
+            $checkStmt = $pdo->prepare("SELECT name FROM `projects` WHERE id = ? AND org_id = ?");
+            $checkStmt->execute([$projectId, $meOrgId]);
+            $projName = $checkStmt->fetchColumn();
+            if (!$projName) throw new Exception("Project not found.");
+
+            // Update status
+            $stmt = $pdo->prepare("UPDATE `projects` SET `status` = ? WHERE id = ?");
+            $stmt->execute([$status, $projectId]);
+
+            // Log activity
+            $actStmt = $pdo->prepare("INSERT INTO `activities` (`action`, `details`, `project_name`, `logged_date`, `org_id`) VALUES (?, ?, ?, ?, ?)");
+            $actStmt->execute(["Updated Project Status to \"$status\"", "Update Status", $projName, date('d M, Y g:i A'), $meOrgId]);
+
+            $response = ['success' => true, 'message' => 'Project status updated successfully'];
+
         } else if ($action === 'create_client') {
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
@@ -242,6 +352,24 @@ try {
                 'success' => true,
                 'message' => 'Employee created successfully'
             ];
+        } else if ($action === 'update_own_organization') {
+            $meRole = $jwtPayload['role'] ?? '';
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 0);
+            if ($meRole !== 'Project Lead') {
+                throw new Exception("Only organization administrators can update organization details.");
+            }
+            $phone = trim($_POST['phone'] ?? '');
+            $address = trim($_POST['address'] ?? '');
+            $details = trim($_POST['details'] ?? '');
+
+            if (empty($phone) || empty($address)) {
+                throw new Exception("Phone and Address are required.");
+            }
+
+            $stmt = $pdo->prepare("UPDATE `organizations` SET `phone` = ?, `address` = ?, `details` = ? WHERE `id` = ?");
+            $stmt->execute([$phone, $address, $details, $meOrgId]);
+
+            $response = ['success' => true, 'message' => 'Organization updated successfully'];
         } else if ($action === 'update_settings') {
             $name = trim($_POST['name'] ?? '');
             $role = trim($_POST['role'] ?? '');
@@ -255,6 +383,59 @@ try {
             }
 
             $meId = $jwtPayload['id'];
+
+            // Fetch existing avatar
+            $stmtMe = $pdo->prepare("SELECT avatar FROM employees WHERE id = ?");
+            $stmtMe->execute([$meId]);
+            $existingAvatar = $stmtMe->fetchColumn();
+
+            $removePhoto = isset($_POST['remove_photo']) && $_POST['remove_photo'] == '1';
+
+            if ($removePhoto) {
+                if ($existingAvatar && (strpos($existingAvatar, '.') !== false || strpos($existingAvatar, 'uploads/') !== false)) {
+                    if (file_exists($existingAvatar)) {
+                        @unlink($existingAvatar);
+                    }
+                }
+                // $avatar remains the submitted initials
+            } else {
+                // Handle optional profile photo upload
+                if (isset($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+                    $file = $_FILES['photo'];
+                    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+                    $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+                    if (!in_array($ext, $allowedExtensions)) {
+                        throw new Exception("Only image files (JPG, PNG, GIF, WEBP) are allowed for profile photo.");
+                    }
+                    $finfo = new finfo(FILEINFO_MIME_TYPE);
+                    $detectedMime = $finfo->file($file['tmp_name']);
+                    if (strpos($detectedMime, 'image/') !== 0) {
+                        throw new Exception("Uploaded file is not a valid image.");
+                    }
+                    $uploadsDir = 'uploads/';
+                    if (!is_dir($uploadsDir)) {
+                        mkdir($uploadsDir, 0755, true);
+                    }
+                    $secureFileName = 'avatar_' . $meId . '_' . time() . '.' . $ext;
+                    $targetPath = $uploadsDir . $secureFileName;
+                    if (move_uploaded_file($file['tmp_name'], $targetPath)) {
+                        // Delete previous profile photo file if it was an upload
+                        if ($existingAvatar && (strpos($existingAvatar, '.') !== false || strpos($existingAvatar, 'uploads/') !== false)) {
+                            if (file_exists($existingAvatar)) {
+                                @unlink($existingAvatar);
+                            }
+                        }
+                        $avatar = $targetPath;
+                    } else {
+                        throw new Exception("Failed to save profile photo.");
+                    }
+                } else {
+                    // No new photo uploaded. If the existing avatar was a file, preserve it.
+                    if ($existingAvatar && (strpos($existingAvatar, '.') !== false || strpos($existingAvatar, 'uploads/') !== false)) {
+                        $avatar = $existingAvatar;
+                    }
+                }
+            }
 
             // Check if email already exists for another employee
             $checkEmail = $pdo->prepare("SELECT COUNT(*) FROM `employees` WHERE `email` = ? AND id != ?");
@@ -314,7 +495,7 @@ try {
         } else if ($action === 'update_task_status') {
             $taskId = (int) ($_POST['task_id'] ?? 0);
             $status = trim($_POST['status'] ?? '');
-            if (!$taskId || !in_array($status, ['Todo', 'In Progress', 'In Review', 'Completed'])) {
+            if (!$taskId || !in_array($status, ['Todo', 'In Progress', 'In Review', 'Completed', 'Pending'])) {
                 throw new Exception("Invalid task or status.");
             }
             // Fetch task details for activity / notification
@@ -592,6 +773,9 @@ try {
         } else if ($action === 'start_call') {
             $discId = (int) ($_POST['discussion_id'] ?? 0);
             $type = trim($_POST['type'] ?? 'video');
+            if ($type === 'audio') {
+                $type = 'voice';
+            }
             $meId = $jwtPayload['id'];
             
             if (!$discId) throw new Exception("Discussion ID required.");
@@ -619,6 +803,9 @@ try {
             ");
             $stmt->execute([$meId, $meId]);
             $call = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($call && $call['type'] === 'voice') {
+                $call['type'] = 'audio';
+            }
             $response = ['success' => true, 'call' => $call];
         } else if ($action === 'delete_discussion') {
             $discId = (int)($_POST['discussion_id'] ?? 0);
@@ -656,14 +843,69 @@ try {
             $projectId = isset($_POST['project_id']) && $_POST['project_id'] !== '' ? (int) $_POST['project_id'] : null;
 
             if (!isset($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
-                throw new Exception("Please select a file to upload.");
+                $uploadErrors = [
+                    UPLOAD_ERR_INI_SIZE   => 'File exceeds server upload limit.',
+                    UPLOAD_ERR_FORM_SIZE  => 'File exceeds form size limit.',
+                    UPLOAD_ERR_PARTIAL    => 'File was only partially uploaded.',
+                    UPLOAD_ERR_NO_FILE    => 'No file was selected.',
+                    UPLOAD_ERR_NO_TMP_DIR => 'Temporary upload directory missing.',
+                    UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk.',
+                    UPLOAD_ERR_EXTENSION  => 'Upload blocked by server extension.',
+                ];
+                $errCode = $_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE;
+                throw new Exception($uploadErrors[$errCode] ?? "File upload failed.");
             }
 
             $file = $_FILES['file'];
-            $fileName = basename($file['name']);
-            $fileSizeVal = $file['size'];
+            $originalName = basename($file['name']);
+            $fileSizeVal  = $file['size'];
 
-            if ($fileSizeVal >= 1048576) {
+            // ── SECURITY: 5 GB size limit ───────────────────────────────
+            $maxSizeBytes = 5 * 1024 * 1024 * 1024; // 5 GB
+            if ($fileSizeVal > $maxSizeBytes) {
+                throw new Exception("File too large. Maximum allowed size is 5 GB.");
+            }
+
+            // ── SECURITY: MIME type allowlist ───────────────────────────
+            $allowedMimes = [
+                'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+                'application/pdf',
+                'application/msword',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'application/vnd.ms-excel',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'application/vnd.ms-powerpoint',
+                'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                'application/zip', 'application/x-zip-compressed',
+                'text/plain', 'text/csv',
+                'application/json',
+                'video/mp4', 'video/mpeg', 'video/quicktime',
+                'audio/mpeg', 'audio/wav',
+            ];
+            $allowedExtensions = [
+                'jpg','jpeg','png','gif','webp','svg',
+                'pdf',
+                'doc','docx','xls','xlsx','ppt','pptx',
+                'zip','txt','csv','json',
+                'mp4','mpeg','mov','mp3','wav'
+            ];
+            $finfo = new finfo(FILEINFO_MIME_TYPE);
+            $detectedMime = $finfo->file($file['tmp_name']);
+            if (!in_array($detectedMime, $allowedMimes)) {
+                throw new Exception("File type '$detectedMime' is not allowed.");
+            }
+            $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+            if (!in_array($ext, $allowedExtensions)) {
+                throw new Exception("File extension '.$ext' is not allowed.");
+            }
+
+            // ── SECURITY: Secure filename ───────────────────────────────
+            $secureFileName = bin2hex(random_bytes(16)) . '_' . time() . '.' . $ext;
+
+            // Human-readable size
+            if ($fileSizeVal >= 1073741824) {
+                $fileSize = round($fileSizeVal / 1073741824, 2) . ' GB';
+            } elseif ($fileSizeVal >= 1048576) {
                 $fileSize = round($fileSizeVal / 1048576, 2) . ' MB';
             } else {
                 $fileSize = round($fileSizeVal / 1024, 2) . ' KB';
@@ -671,21 +913,25 @@ try {
 
             $uploadsDir = 'uploads/';
             if (!is_dir($uploadsDir)) {
-                mkdir($uploadsDir, 0777, true);
+                mkdir($uploadsDir, 0755, true);
             }
-
-            $targetPath = $uploadsDir . time() . '_' . $fileName;
+            $targetPath = $uploadsDir . $secureFileName;
             if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
                 throw new Exception("Failed to save the uploaded file.");
             }
 
             $meOrgId = (int) ($jwtPayload['org_id'] ?? 1);
-            $stmt = $pdo->prepare("INSERT INTO `documents` (`name`, `filepath`, `owner_id`, `project_id`, `size`, `org_id`) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$fileName, $targetPath, $meId, $projectId, $fileSize, $meOrgId]);
+            $stmt = $pdo->prepare("INSERT INTO `documents` (`name`, `filepath`, `owner_id`, `project_id`, `size`, `org_id`, `original_name`, `mime_type`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$originalName, $targetPath, $meId, $projectId, $fileSize, $meOrgId, $originalName, $detectedMime]);
+            $newDocId = (int)$pdo->lastInsertId();
+
+            // Audit log
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            $pdo->prepare("INSERT INTO `document_logs` (`doc_id`, `employee_id`, `action`, `ip_address`, `org_id`) VALUES (?, ?, 'upload', ?, ?)")->execute([$newDocId, $meId, $clientIp, $meOrgId]);
 
             // Add notification
             $notifStmt = $pdo->prepare("INSERT INTO `notifications` (`message`, `category`, `org_id`) VALUES (?, ?, ?)");
-            $notifStmt->execute(["Uploaded document '$fileName'", 'success', $meOrgId]);
+            $notifStmt->execute(["Uploaded document '$originalName'", 'success', $meOrgId]);
 
             $response = ['success' => true, 'message' => 'Document uploaded successfully'];
         } else if ($action === 'delete_document') {
@@ -808,7 +1054,7 @@ try {
 
             $response = ['success' => true, 'message' => 'Department deleted successfully'];
         } else if ($action === 'approve_org') {
-            if ($jwtPayload['role'] !== 'Admin') throw new Exception("Unauthorized.");
+            if ($jwtPayload['role'] !== 'Admin' && $jwtPayload['role'] !== 'Super Admin') throw new Exception("Unauthorized.");
             $orgId = (int)($_POST['org_id'] ?? 0);
             if (!$orgId) throw new Exception("Invalid Organization ID.");
             
@@ -816,12 +1062,119 @@ try {
             $pdo->prepare("UPDATE `employees` SET `status` = 'Approved' WHERE org_id = ? AND role = 'Project Lead'")->execute([$orgId]);
             $response = ['success' => true, 'message' => 'Organization approved successfully'];
         } else if ($action === 'reject_org') {
-            if ($jwtPayload['role'] !== 'Admin') throw new Exception("Unauthorized.");
+            if ($jwtPayload['role'] !== 'Admin' && $jwtPayload['role'] !== 'Super Admin') throw new Exception("Unauthorized.");
             $orgId = (int)($_POST['org_id'] ?? 0);
             if (!$orgId) throw new Exception("Invalid Organization ID.");
             
             $pdo->prepare("UPDATE `organizations` SET `status` = 'Rejected' WHERE id = ?")->execute([$orgId]);
             $response = ['success' => true, 'message' => 'Organization rejected successfully'];
+        } else if ($action === 'delete_org') {
+            if ($jwtPayload['role'] !== 'Admin' && $jwtPayload['role'] !== 'Super Admin') throw new Exception("Unauthorized.");
+            $orgId = (int)($_POST['org_id'] ?? 0);
+            if (!$orgId) throw new Exception("Invalid Organization ID.");
+            if ($orgId === 1) throw new Exception("Cannot delete the default organization.");
+
+            $pdo->beginTransaction();
+            try {
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+                // Delete from tables without org_id column using subqueries
+                $pdo->prepare("DELETE FROM `discussion_messages` WHERE `discussion_id` IN (SELECT `id` FROM `discussions` WHERE `org_id` = ?)")->execute([$orgId]);
+                $pdo->prepare("DELETE FROM `discussion_members` WHERE `discussion_id` IN (SELECT `id` FROM `discussions` WHERE `org_id` = ?)")->execute([$orgId]);
+                $pdo->prepare("DELETE FROM `project_members` WHERE `project_id` IN (SELECT `id` FROM `projects` WHERE `org_id` = ?)")->execute([$orgId]);
+
+                $tables = [
+                    'timesheets',
+                    'tasks',
+                    'projects',
+                    'clients',
+                    'documents',
+                    'discussions',
+                    'pin_notes',
+                    'notifications',
+                    'activities',
+                    'attendance',
+                    'buildings',
+                    'single_plots',
+                    'ual_records',
+                    'land_surveys',
+                    'goal_tracker',
+                    'document_logs',
+                    'employees'
+                ];
+
+                foreach ($tables as $table) {
+                    $stmt = $pdo->prepare("DELETE FROM `$table` WHERE `org_id` = ?");
+                    $stmt->execute([$orgId]);
+                }
+
+                $stmtOrg = $pdo->prepare("DELETE FROM `organizations` WHERE `id` = ?");
+                $stmtOrg->execute([$orgId]);
+
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                $pdo->commit();
+                $response = ['success' => true, 'message' => 'Organization deleted successfully'];
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                throw $e;
+            }
+        } else if ($action === 'create_goal') {
+            // ---- CREATE GOAL ----
+            $meRole = $jwtPayload['role'] ?? '';
+            if ($meRole !== 'Admin' && $meRole !== 'Project Lead' && $meRole !== 'Super Admin') {
+                throw new Exception("Only organization administrators have access to this action.");
+            }
+            $title       = trim($_POST['title'] ?? '');
+            $description = trim($_POST['description'] ?? '');
+            $startDate   = trim($_POST['start_date'] ?? '');
+            $targetDate  = trim($_POST['target_date'] ?? '');
+            $status      = trim($_POST['status'] ?? 'Not Started');
+            if (!$title || !$startDate || !$targetDate) throw new Exception('Title, start date and target date are required.');
+            if ($targetDate <= $startDate) throw new Exception('Target date must be after start date.');
+            $allowedStatuses = ['Not Started', 'In Progress'];
+            if (!in_array($status, $allowedStatuses)) $status = 'Not Started';
+            $stmt = $pdo->prepare("INSERT INTO `goal_tracker` (`org_id`, `title`, `description`, `start_date`, `target_date`, `status`, `created_by`) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$meOrgId, $title, $description, $startDate, $targetDate, $status, $jwtPayload['id']]);
+            $response = ['success' => true, 'id' => $pdo->lastInsertId(), 'message' => 'Goal created successfully.'];
+
+        } else if ($action === 'mark_goal_complete') {
+            // ---- MARK GOAL COMPLETE ----
+            $meRole = $jwtPayload['role'] ?? '';
+            if ($meRole !== 'Admin' && $meRole !== 'Project Lead' && $meRole !== 'Super Admin') {
+                throw new Exception("Only organization administrators have access to this action.");
+            }
+            $goalId = (int)($_POST['goal_id'] ?? 0);
+            if (!$goalId) throw new Exception('Goal ID is required.');
+            $stmt = $pdo->prepare("UPDATE `goal_tracker` SET `status` = 'Completed', `progress` = 100, `actual_completion_date` = CURDATE() WHERE `id` = ? AND `org_id` = ?");
+            $stmt->execute([$goalId, $meOrgId]);
+            $response = ['success' => true, 'message' => 'Goal marked as completed.'];
+
+        } else if ($action === 'delete_goal') {
+            // ---- DELETE GOAL ----
+            $meRole = $jwtPayload['role'] ?? '';
+            if ($meRole !== 'Admin' && $meRole !== 'Project Lead' && $meRole !== 'Super Admin') {
+                throw new Exception("Only organization administrators have access to this action.");
+            }
+            $goalId = (int)($_POST['goal_id'] ?? 0);
+            if (!$goalId) throw new Exception('Goal ID is required.');
+            $pdo->prepare("DELETE FROM `goal_tracker` WHERE `id` = ? AND `org_id` = ?")->execute([$goalId, $meOrgId]);
+            $response = ['success' => true, 'message' => 'Goal deleted.'];
+
+        } else if ($action === 'update_goal_progress') {
+            // ---- UPDATE GOAL PROGRESS ----
+            $meRole = $jwtPayload['role'] ?? '';
+            if ($meRole !== 'Admin' && $meRole !== 'Project Lead' && $meRole !== 'Super Admin') {
+                throw new Exception("Only organization administrators have access to this action.");
+            }
+            $goalId   = (int)($_POST['goal_id'] ?? 0);
+            $progress = max(0, min(100, (int)($_POST['progress'] ?? 0)));
+            if (!$goalId) throw new Exception('Goal ID is required.');
+            $newStatus = $progress >= 100 ? 'Completed' : ($progress > 0 ? 'In Progress' : 'Not Started');
+            $completionDate = $progress >= 100 ? 'CURDATE()' : 'NULL';
+            $stmt = $pdo->prepare("UPDATE `goal_tracker` SET `progress` = ?, `status` = ?, `actual_completion_date` = IF(? >= 100, CURDATE(), NULL) WHERE `id` = ? AND `org_id` = ?");
+            $stmt->execute([$progress, $newStatus, $progress, $goalId, $meOrgId]);
+            $response = ['success' => true, 'message' => 'Progress updated.'];
+
         } else if ($action === 'get_discussion_members') {
             $discId = (int)($_REQUEST['discussion_id'] ?? 0);
             $meId = $jwtPayload['id'];
@@ -1080,8 +1433,8 @@ try {
                 $otherName = $stmtUser->fetchColumn() ?: "Direct Chat";
 
                 // Create new direct discussion
-                $stmtNew = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`) VALUES (?, 'Direct', ?)");
-                $stmtNew->execute([$otherName, date('d M Y')]);
+                $stmtNew = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`, `org_id`, `is_direct`) VALUES (?, 'Direct', ?, ?, 1)");
+                $stmtNew->execute([$otherName, date('d M Y'), (int)($jwtPayload['org_id'] ?? 1)]);
                 $discId = $pdo->lastInsertId();
 
                 // Add members
@@ -1201,8 +1554,15 @@ try {
                 $stmt->execute([$targetDate, $projectId]);
             }
 
-            $currentDate = $startDate;
+            // Fetch assignee names for response
+            $empNameMap = [];
+            $empRows = $pdo->query("SELECT id, name FROM employees")->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($empRows as $er) { $empNameMap[$er['id']] = $er['name']; }
+
+            $taskStartDate = $startDate;
             $prevTaskId = null;
+            $createdTasks = [];
+
             foreach ($sequenceData as $t) {
                 $assigneeId = (int)($jwtPayload['id']);
                 if (!empty($t['assignee']) && is_numeric($t['assignee'])) {
@@ -1212,7 +1572,7 @@ try {
                 $days = (int)($t['days'] ?? 1);
                 if ($days < 1) $days = 1;
 
-                $currentDate = date('Y-m-d', strtotime("$currentDate + $days days"));
+                $taskEndDate = date('Y-m-d', strtotime("$taskStartDate + $days days"));
 
                 $stmt = $pdo->prepare("INSERT INTO `tasks` 
                     (`title`, `description`, `project_id`, `assigned_to`, `priority`, `status`, `org_id`, 
@@ -1228,9 +1588,25 @@ try {
                     $days,
                     (int)$t['order'],
                     $prevTaskId,
-                    $currentDate
+                    $taskEndDate
                 ]);
                 $prevTaskId = $pdo->lastInsertId();
+
+                $createdTasks[] = [
+                    'id'           => (int)$prevTaskId,
+                    'title'        => $t['title'],
+                    'assignee_id'  => $assigneeId,
+                    'assignee'     => $empNameMap[$assigneeId] ?? ('User #' . $assigneeId),
+                    'priority'     => $t['priority'],
+                    'start_date'   => $taskStartDate,
+                    'end_date'     => $taskEndDate,
+                    'days'         => $days,
+                    'order'        => (int)$t['order'],
+                    'status'       => 'Todo'
+                ];
+
+                // Next task starts after this one ends
+                $taskStartDate = $taskEndDate;
             }
 
             // Log activity
@@ -1239,8 +1615,10 @@ try {
             $actStmt->execute(["Generated Layout Task Sequence", "Layout Setup", $projName, date('d M, Y g:i A'), $meOrgId]);
 
             $response = [
-                'success' => true,
-                'message' => 'Layout saved successfully.'
+                'success'      => true,
+                'message'      => 'Layout saved successfully.',
+                'project_name' => $projName,
+                'tasks'        => $createdTasks
             ];
         } else if ($action === 'create_building') {
             $name = trim($_POST['name'] ?? '');
@@ -1469,6 +1847,148 @@ try {
             $response = ['success' => true, 'message' => 'Land survey deleted successfully'];
         }
 
+        if ($action === 'get_project_details') {
+            $projectId = (int)($_REQUEST['project_id'] ?? 0);
+            $meOrgId   = (int)($jwtPayload['org_id'] ?? 1);
+            if (!$projectId) throw new Exception('Project ID is required.');
+
+            // Project info with client name + creator name
+            $stmtP = $pdo->prepare("
+                SELECT p.*, c.name as client_name, e.name as created_by_name,
+                       o.name as org_name
+                FROM `projects` p
+                LEFT JOIN `clients` c ON p.client_id = c.id
+                LEFT JOIN `employees` e ON p.created_by = e.id
+                LEFT JOIN `organizations` o ON p.org_id = o.id
+                WHERE p.id = ? AND p.org_id = ?
+            ");
+            $stmtP->execute([$projectId, $meOrgId]);
+            $project = $stmtP->fetch(PDO::FETCH_ASSOC);
+            if (!$project) throw new Exception('Project not found or access denied.');
+
+            // Tasks with assignee
+            $stmtT = $pdo->prepare("
+                SELECT t.id, t.title, t.priority, t.status, t.due_date,
+                       e.name as assigned_name
+                FROM `tasks` t
+                LEFT JOIN `employees` e ON t.assigned_to = e.id
+                WHERE t.project_id = ?
+                ORDER BY t.id ASC
+            ");
+            $stmtT->execute([$projectId]);
+            $tasks = $stmtT->fetchAll(PDO::FETCH_ASSOC);
+
+            // Team members
+            $stmtM = $pdo->prepare("
+                SELECT e.id, e.name, e.role, e.avatar
+                FROM `project_members` pm
+                JOIN `employees` e ON pm.employee_id = e.id
+                WHERE pm.project_id = ?
+                ORDER BY e.name ASC
+            ");
+            $stmtM->execute([$projectId]);
+            $members = $stmtM->fetchAll(PDO::FETCH_ASSOC);
+
+            // Activity history
+            $stmtA = $pdo->prepare("
+                SELECT action, details, logged_date
+                FROM `activities`
+                WHERE project_name = ? AND org_id = ?
+                ORDER BY id DESC LIMIT 20
+            ");
+            $stmtA->execute([$project['name'], $meOrgId]);
+            $activities = $stmtA->fetchAll(PDO::FETCH_ASSOC);
+
+            // Timeline tasks
+            $stmtTL = $pdo->prepare("
+                SELECT t.id, t.title, t.priority, t.status, t.due_date, t.estimated_duration,
+                       t.sequence_order, e.name as assignee
+                FROM `tasks` t
+                LEFT JOIN `employees` e ON t.assigned_to = e.id
+                WHERE t.project_id = ? AND t.sequence_order > 0
+                ORDER BY t.sequence_order ASC
+            ");
+            $stmtTL->execute([$projectId]);
+            $timelineTasks = $stmtTL->fetchAll(PDO::FETCH_ASSOC);
+
+            // Calculate progress
+            $totalTasks = count($tasks);
+            $completedTasks = count(array_filter($tasks, fn($t) => $t['status'] === 'Completed'));
+            $progressPct = $totalTasks > 0 ? round(($completedTasks / $totalTasks) * 100) : 0;
+
+            $response = [
+                'success'    => true,
+                'project'    => $project,
+                'tasks'      => $tasks,
+                'members'    => $members,
+                'activities' => $activities,
+                'milestones' => $timelineTasks,
+                'progress'   => $progressPct,
+                'total_tasks'     => $totalTasks,
+                'completed_tasks' => $completedTasks
+            ];
+        }
+
+        if ($action === 'get_timeline') {
+            $projectId = (int)($_GET['project_id'] ?? $_POST['project_id'] ?? 0);
+            $meOrgId   = (int)($jwtPayload['org_id'] ?? 1);
+            if (!$projectId) throw new Exception('Project ID is required.');
+
+            $stmtP = $pdo->prepare("SELECT id, name, due_date FROM `projects` WHERE id = ? AND org_id = ?");
+            $stmtP->execute([$projectId, $meOrgId]);
+            $project = $stmtP->fetch(PDO::FETCH_ASSOC);
+            if (!$project) throw new Exception('Project not found.');
+
+            $stmtT = $pdo->prepare(
+                "SELECT t.id, t.title, t.priority, t.status, t.due_date, t.estimated_duration,
+                        t.sequence_order, t.depends_on, e.name as assignee
+                 FROM `tasks` t
+                 LEFT JOIN `employees` e ON t.assigned_to = e.id
+                 WHERE t.project_id = ?
+                 ORDER BY COALESCE(t.sequence_order, t.id) ASC"
+            );
+            $stmtT->execute([$projectId]);
+            $rawTasks = $stmtT->fetchAll(PDO::FETCH_ASSOC);
+
+            // Reconstruct sequential start_date & end_date from due_date / estimated_duration
+            // Walk tasks in sequence: each task ends on its due_date, starts (due_date - estimated_duration)
+            $tasks = [];
+            foreach ($rawTasks as $t) {
+                $days    = max(1, (int)($t['estimated_duration'] ?? 1));
+                $endDate = $t['due_date'] ?: date('Y-m-d');
+                $startDate = date('Y-m-d', strtotime("$endDate - $days days"));
+                $t['start_date'] = $startDate;
+                $t['end_date']   = $endDate;
+                $tasks[] = $t;
+            }
+
+            $response = ['success' => true, 'project' => $project, 'tasks' => $tasks];
+        }
+
+        if ($action === 'get_project_pdf_data') {
+            $projectId = (int)($_GET['project_id'] ?? $_POST['project_id'] ?? 0);
+            $meOrgId   = (int)($jwtPayload['org_id'] ?? 1);
+            if (!$projectId) throw new Exception('Project ID is required.');
+
+            // Fetch project
+            $stmtP = $pdo->prepare("SELECT p.*, c.name as client_name FROM `projects` p LEFT JOIN `clients` c ON p.client_id = c.id WHERE p.id = ? AND p.org_id = ?");
+            $stmtP->execute([$projectId, $meOrgId]);
+            $project = $stmtP->fetch(PDO::FETCH_ASSOC);
+            if (!$project) throw new Exception('Project not found or access denied.');
+
+            // Fetch tasks with assignee names
+            $stmtT = $pdo->prepare("SELECT t.*, e.name as assigned_name FROM `tasks` t LEFT JOIN `employees` e ON t.assigned_to = e.id WHERE t.project_id = ? ORDER BY t.id ASC");
+            $stmtT->execute([$projectId]);
+            $tasks = $stmtT->fetchAll(PDO::FETCH_ASSOC);
+
+            // Fetch team members
+            $stmtM = $pdo->prepare("SELECT e.id, e.name, e.role FROM `project_members` pm JOIN `employees` e ON pm.employee_id = e.id WHERE pm.project_id = ?");
+            $stmtM->execute([$projectId]);
+            $members = $stmtM->fetchAll(PDO::FETCH_ASSOC);
+
+            $response = ['success' => true, 'project' => $project, 'tasks' => $tasks, 'members' => $members];
+        }
+
         if ($action === 'get_pipeline_stage_details') {
             $stage = trim($_GET['stage'] ?? '');
             $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
@@ -1508,7 +2028,7 @@ try {
         // ==========================================
         // SURVEY MANAGEMENT MODULE
         $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
-        $meId = (int)($jwtPayload['user_id'] ?? 1);
+        $meId = (int)($jwtPayload['id'] ?? 1);
 
 
         // ==========================================

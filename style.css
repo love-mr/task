@@ -132,16 +132,16 @@ body {
 .sl-name {
     font-size: 14px;
     font-weight: 800;
-    color: #111827;
+    color: #ffffff;
     letter-spacing: -0.2px;
 }
-.sl-accent { color: #2563eb; }
+.sl-accent { color: #facc15; }
 .sl-sub {
     font-size: 8px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 2px;
-    color: #9ca3af;
+    color: rgba(255,255,255,0.65);
     margin-top: 1px;
 }
 
@@ -1893,11 +1893,13 @@ body {
     box-shadow: var(--shadow-card);
     transition: var(--transition);
     position: relative;
+    cursor: pointer;
 }
 
 .project-grid-card:hover {
     box-shadow: var(--shadow-md);
     border-color: var(--primary);
+    transform: translateY(-1px);
 }
 
 .project-grid-header {
@@ -2314,6 +2316,7 @@ body {
     display: flex;
     flex-direction: column;
     min-height: 220px;
+    cursor: pointer;
 }
 
 .project-grid-card:hover {
@@ -2620,23 +2623,31 @@ body {
 .chat-window-details {
     display: flex;
     flex-direction: column;
+    min-width: 0;
 }
 
 .chat-window-title {
     font-size: 14px;
     font-weight: 700;
     color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .chat-window-members {
     font-size: 11px;
     color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .chat-window-actions {
     display: flex;
     gap: 12px;
     color: var(--text-muted);
+    flex-shrink: 0;
 }
 
 .chat-window-messages {
@@ -3122,9 +3133,15 @@ body.dark-theme .priority-tag.pri-low {
     color: var(--pri-low-text) !important;
 }
 
-/* Sidebar Logo Accent */
+/* Sidebar Logo Text – ensure visibility on dark sidebar */
+body.dark-theme .sl-name {
+    color: #f8fafc !important;
+}
+body.dark-theme .sl-sub {
+    color: rgba(248,250,252,0.6) !important;
+}
 body.dark-theme .sl-accent {
-    color: #38bdf8 !important;
+    color: #facc15 !important;
 }
 
 /* Dropdown and Select Fields */
@@ -3249,6 +3266,131 @@ body.dark-theme .note-tab-btn.active {
     border-bottom-color: #38bdf8 !important;
 }
 
+/* Dashboard Replica Dark Mode Overrides */
+body.dark-theme .rsk-card-sm,
+body.dark-theme .rsk-panel,
+body.dark-theme .rsk-qa-btn,
+body.dark-theme .rsk-step-count {
+    background-color: #1e293b !important;
+    background: #1e293b !important;
+    border-color: #334155 !important;
+    color: #f8fafc !important;
+}
+
+body.dark-theme .rsk-card-title,
+body.dark-theme .rsk-qa-text,
+body.dark-theme .rsk-step-title {
+    color: #94a3b8 !important;
+}
+
+body.dark-theme .rsk-card-value,
+body.dark-theme .rsk-panel-title {
+    color: #f8fafc !important;
+}
+
+body.dark-theme .rsk-stepper::before {
+    background: #334155 !important;
+}
+
+body.dark-theme .rsk-step-circle {
+    background: #0f172a !important;
+    border-color: #334155 !important;
+    box-shadow: 0 0 0 1px #334155 !important;
+}
+
+body.dark-theme .rsk-table th {
+    color: #94a3b8 !important;
+    border-bottom-color: #334155 !important;
+}
+
+body.dark-theme .rsk-table td {
+    color: #f8fafc !important;
+    border-bottom-color: #334155 !important;
+}
+
+body.dark-theme .rsk-progress-bar {
+    background: #334155 !important;
+}
+
+/* Global Form Controls & Inline Style overrides for dark mode */
+body.dark-theme input,
+body.dark-theme textarea,
+body.dark-theme select {
+    background-color: #0f172a !important;
+    background: #0f172a !important;
+    color: #f8fafc !important;
+    border-color: #334155 !important;
+}
+
+/* Inline Styles Overrides for 3-digit hex backgrounds */
+body.dark-theme [style*="background: #fff"],
+body.dark-theme [style*="background:#fff"],
+body.dark-theme [style*="background-color: #fff"],
+body.dark-theme [style*="background-color:#fff"],
+body.dark-theme [style*="background: #ffffff"],
+body.dark-theme [style*="background:#ffffff"],
+body.dark-theme [style*="background-color: #ffffff"],
+body.dark-theme [style*="background-color:#ffffff"] {
+    background-color: #1e293b !important;
+    background: #1e293b !important;
+}
+
+/* Map light grey backgrounds to dark backgrounds */
+body.dark-theme [style*="background: #f1f5f9"],
+body.dark-theme [style*="background:#f1f5f9"],
+body.dark-theme [style*="background-color: #f1f5f9"],
+body.dark-theme [style*="background-color:#f1f5f9"] {
+    background-color: #0f172a !important;
+    background: #0f172a !important;
+}
+
+/* Map light-color notification icon badges to dark mode equivalents */
+body.dark-theme [style*="background:#fff1f2"],
+body.dark-theme [style*="background: #fff1f2"],
+body.dark-theme [style*="background:#fef2f2"],
+body.dark-theme [style*="background: #fef2f2"] {
+    background-color: #7f1d1d !important;
+    background: #7f1d1d !important;
+}
+body.dark-theme [style*="background:#fef3c7"],
+body.dark-theme [style*="background: #fef3c7"] {
+    background-color: #7c2d12 !important;
+    background: #7c2d12 !important;
+}
+body.dark-theme [style*="background:#dcfce7"],
+body.dark-theme [style*="background: #dcfce7"] {
+    background-color: #064e3b !important;
+    background: #064e3b !important;
+}
+body.dark-theme [style*="background:#eff6ff"],
+body.dark-theme [style*="background: #eff6ff"] {
+    background-color: #1e3a8a !important;
+    background: #1e3a8a !important;
+}
+
+/* Map notification icon colors to higher contrast dark mode equivalents */
+body.dark-theme [style*="color:#ef4444"],
+body.dark-theme [style*="color: #ef4444"] {
+    color: #fca5a5 !important;
+}
+body.dark-theme [style*="color:#f59e0b"],
+body.dark-theme [style*="color: #f59e0b"] {
+    color: #fdba74 !important;
+}
+body.dark-theme [style*="color:#10b981"],
+body.dark-theme [style*="color: #10b981"] {
+    color: #34d399 !important;
+}
+body.dark-theme [style*="color:#3b82f6"],
+body.dark-theme [style*="color: #3b82f6"] {
+    color: #60a5fa !important;
+}
+
+/* Custom CSS variables support for dynamic variables */
+body.dark-theme {
+    --bg-light: #0f172a !important;
+}
+
 /* ==========================================================================
    STANDARDIZED SEARCH WRAPPER & SETTINGS PAGE STYLING
    ========================================================================== */
@@ -3328,8 +3470,7 @@ body.dark-theme .note-tab-btn.active {
 .settings-grid-layout {
     display: flex;
     gap: 24px;
-    max-width: 1000px;
-    margin: 0 auto;
+    width: 100%;
     flex-wrap: wrap;
 }
 .settings-profile-card {
@@ -3402,4 +3543,40 @@ body.dark-theme #notes-tags-filter-dropdown a:hover {
     background-color: #334155 !important;
     color: #38bdf8 !important;
 }
-
+/* ───────── Goal Tracker Dark Theme ───────── */
+body.dark-theme .goal-card {
+    background-color: #1e293b !important;
+    border-color: #334155 !important;
+}
+body.dark-theme .goal-card span[style*="color:#0f172a"],
+body.dark-theme .goal-card div[style*="color:#0f172a"] {
+    color: #f8fafc !important;
+}
+body.dark-theme .goal-card div[style*="color:#64748b"],
+body.dark-theme .goal-card span[style*="color:#64748b"] {
+    color: #94a3b8 !important;
+}
+body.dark-theme .goal-card div[style*="background:#f1f5f9"] {
+    background-color: #334155 !important;
+}
+body.dark-theme #goalModal > div {
+    background: #1e293b !important;
+    border: 1px solid #334155;
+}
+body.dark-theme #goalModal h3 {
+    color: #f8fafc !important;
+}
+body.dark-theme #goalModal label {
+    color: #94a3b8 !important;
+}
+body.dark-theme #goalModal input,
+body.dark-theme #goalModal textarea,
+body.dark-theme #goalModal select {
+    background: #0f172a !important;
+    border-color: #334155 !important;
+    color: #f8fafc !important;
+}
+/* Goal tracker panel header text in dark mode */
+body.dark-theme .rsk-panel div[style*="color:#0f172a"] {
+    color: #f8fafc !important;
+}

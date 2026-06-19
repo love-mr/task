@@ -40,6 +40,7 @@ document.addEventListener('DOMContentLoaded', function() {
     setupLayoutModule();
     setupDashboardTriggers();
     setupTaskEditFeatures();
+    setupSurveyManagement();
 });
 
 // ==========================================================================
@@ -54,13 +55,13 @@ function setupSPARouting() {
         let cleanHash = targetHash.replace('#', '');
         
         // Determine default tab based on user role
-        const defaultTab = (window.VYALA_USER_ROLE === 'Admin') ? 'organizations' : 'dashboard';
+        const defaultTab = (window.VYALA_USER_ROLE === 'Admin' || window.VYALA_USER_ROLE === 'Super Admin') ? 'organizations' : 'dashboard';
         if (!cleanHash) {
             cleanHash = defaultTab;
         }
 
-        // Force Admin to only access the 'organizations' tab
-        if (window.VYALA_USER_ROLE === 'Admin' && cleanHash !== 'organizations') {
+        // Force Admin/Super Admin tab restrictions
+        if ((window.VYALA_USER_ROLE === 'Super Admin' || window.VYALA_USER_ROLE === 'Admin') && cleanHash !== 'organizations') {
             window.location.hash = '#organizations';
             return;
         }
@@ -86,6 +87,7 @@ function setupSPARouting() {
         // Update page title
         const titles = {
             'dashboard': 'Dashboard',
+            'organizations': 'Organizations',
             'tasks': 'Tasks',
             'projects': 'Projects',
             'discussion': 'Discussion',
@@ -101,7 +103,8 @@ function setupSPARouting() {
             'building': 'Building Module',
             'singleplot': 'Single Plot Module',
             'ual': 'UAL Module',
-            'landsurvey': 'Land Survey Module'
+            'landsurvey': 'Land Survey Module',
+            'surveymanagement': 'Survey Management'
         };
         if (pageTitle && titles[cleanHash]) {
             pageTitle.textContent = titles[cleanHash];
@@ -118,7 +121,7 @@ function setupSPARouting() {
     });
 
     // Check initial hash
-    if (window.VYALA_USER_ROLE === 'Admin') {
+    if (window.VYALA_USER_ROLE === 'Admin' || window.VYALA_USER_ROLE === 'Super Admin') {
         if (window.location.hash !== '#organizations') {
             window.location.hash = '#organizations';
         } else {
@@ -447,19 +450,26 @@ function setupFormActions() {
                 
                 // --- E2EE Intercept for New Discussion ---
                 if (formId === 'form-new-discussion') {
-                    // Generate a shared AES key and encrypt it for self
-                    generateAESKey().then(aesKeyObj => {
-                        exportAESKey(aesKeyObj).then(aesKeyBase64 => {
-                            const selfPubKey = localStorage.getItem('e2ee_public_key');
-                            encryptAESKeyWithRSA(aesKeyBase64, selfPubKey).then(encSelf => {
-                                formData.append('encrypted_key_self', encSelf);
-                                submitFormAjax(actionUrl, formData, form);
+                    const selfPubKey = localStorage.getItem('e2ee_public_key');
+                    if (selfPubKey) {
+                        // Generate a shared AES key and encrypt it for self
+                        generateAESKey().then(aesKeyObj => {
+                            exportAESKey(aesKeyObj).then(aesKeyBase64 => {
+                                encryptAESKeyWithRSA(aesKeyBase64, selfPubKey).then(encSelf => {
+                                    formData.append('encrypted_key_self', encSelf);
+                                    submitFormAjax(actionUrl, formData, form);
+                                }).catch(err => {
+                                    console.error("Failed to encrypt group key:", err);
+                                    submitFormAjax(actionUrl, formData, form);
+                                });
                             });
+                        }).catch(err => {
+                            console.error("Failed to generate group AES key:", err);
+                            submitFormAjax(actionUrl, formData, form);
                         });
-                    }).catch(err => {
-                        console.error("Failed to generate group AES key:", err);
-                        alert("Failed to setup secure chat. Please check console.");
-                    });
+                    } else {
+                        submitFormAjax(actionUrl, formData, form);
+                    }
                 } else {
                     submitFormAjax(actionUrl, formData, form);
                 }
@@ -516,20 +526,18 @@ function setupFormActions() {
                 return; // nothing to send
             }
 
-            // E2EE: Encrypt message if AES key is available, otherwise send plain text
+            // E2EE Message Encryption if active session key exists
             if (window.currentAESKey && rawMsg) {
                 try {
                     const encryptedMsg = await encryptMessageAES(rawMsg, window.currentAESKey);
                     formData.set('message', encryptedMsg);
                 } catch(encErr) {
-                    console.warn("E2EE encryption failed, sending as plain text:", encErr);
-                    // Plain text will be sent from the original formData
+                    console.warn("Failed to encrypt message with E2EE, sending as plain text fallback:", encErr);
                 }
             }
 
             const sendBtn = chatForm.querySelector('[type="submit"]');
             if (sendBtn) sendBtn.disabled = true;
-
             fetch('api.php?action=send_message', {
                 method: 'POST',
                 body: formData
@@ -655,13 +663,20 @@ function setupHeaderWidgets() {
         if (circle) {
             circle.style.position = 'absolute';
             circle.style.left = '30px';
+            const icon = circle.querySelector('i');
+            if (icon) icon.setAttribute('data-lucide', 'moon');
         }
     } else {
         document.body.classList.remove('dark-theme');
         if (circle) {
             circle.style.position = 'absolute';
             circle.style.left = '4px';
+            const icon = circle.querySelector('i');
+            if (icon) icon.setAttribute('data-lucide', 'sun');
         }
+    }
+    if (typeof lucide !== 'undefined') {
+        lucide.createIcons();
     }
     
     if (sunBtn) {
@@ -669,11 +684,22 @@ function setupHeaderWidgets() {
             if (document.body.classList.contains('dark-theme')) {
                 document.body.classList.remove('dark-theme');
                 localStorage.setItem('vyala_taskpad_theme', 'light');
-                if (circle) circle.style.left = '4px';
+                if (circle) {
+                    circle.style.left = '4px';
+                    const icon = circle.querySelector('i');
+                    if (icon) icon.setAttribute('data-lucide', 'sun');
+                }
             } else {
                 document.body.classList.add('dark-theme');
                 localStorage.setItem('vyala_taskpad_theme', 'dark');
-                if (circle) circle.style.left = '30px';
+                if (circle) {
+                    circle.style.left = '30px';
+                    const icon = circle.querySelector('i');
+                    if (icon) icon.setAttribute('data-lucide', 'moon');
+                }
+            }
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
             }
         });
     }
@@ -1069,11 +1095,26 @@ function setupSubTabAndAccordionBindings() {
                 const title = item.getAttribute('data-chat-title') || '';
                 const avatar = item.getAttribute('data-chat-avatar') || '';
                 const color = item.getAttribute('data-chat-color') || '';
+                const chatType = item.getAttribute('data-chat-type') || '';
+                const chatMembers = item.getAttribute('data-chat-members') || '1';
                 
                 if (activeTitle) activeTitle.textContent = title;
                 if (activeAvatar) {
                     activeAvatar.textContent = avatar;
                     activeAvatar.className = 'chat-thread-avatar ' + color;
+                }
+                
+                const membersEl = document.querySelector('.chat-window-members');
+                const memBtn = document.getElementById('chat-header-members');
+                if (membersEl) {
+                    if (chatType === 'Direct') {
+                        membersEl.textContent = 'Direct Chat';
+                        if (memBtn) memBtn.style.display = 'none';
+                    } else {
+                        const membersCount = parseInt(chatMembers, 10);
+                        membersEl.textContent = `${membersCount} Members active in channel`;
+                        if (memBtn) memBtn.style.display = 'flex';
+                    }
                 }
                 
                 // Show chat window header and footer
@@ -1121,11 +1162,37 @@ function setupSubTabAndAccordionBindings() {
         const initialDisc = document.querySelector('.chat-thread-item.active');
         if (initialDisc) {
             const initialId = initialDisc.getAttribute('data-chat-id');
+            const title = initialDisc.getAttribute('data-chat-title') || '';
+            const avatar = initialDisc.getAttribute('data-chat-avatar') || '';
+            const color = initialDisc.getAttribute('data-chat-color') || '';
+            const chatType = initialDisc.getAttribute('data-chat-type') || '';
+            const chatMembers = initialDisc.getAttribute('data-chat-members') || '1';
+            
+            if (activeTitle) activeTitle.textContent = title;
+            if (activeAvatar) {
+                activeAvatar.textContent = avatar;
+                activeAvatar.className = 'chat-thread-avatar ' + color;
+            }
+            
+            const membersEl = document.querySelector('.chat-window-members');
+            const memBtn = document.getElementById('chat-header-members');
+            if (membersEl) {
+                if (chatType === 'Direct') {
+                    membersEl.textContent = 'Direct Chat';
+                    if (memBtn) memBtn.style.display = 'none';
+                } else {
+                    const membersCount = parseInt(chatMembers, 10);
+                    membersEl.textContent = `${membersCount} Members active in channel`;
+                    if (memBtn) memBtn.style.display = 'flex';
+                }
+            }
+            
             const header = document.querySelector('.chat-window-header');
             const footer = document.querySelector('.chat-window-footer');
             if (header) header.style.display = 'flex';
             if (footer) footer.style.display = 'block';
             loadThreadMessages(initialId);
+            startMessagePolling(initialId);
         }
     }
 
@@ -1550,8 +1617,6 @@ function loadDiscussionMembers(discussionId) {
                     const actionBtnsHtml = isMe ? '' : `
                         <div style="display:flex; gap:8px; align-items:center;">
                             <i data-lucide="message-square" class="member-action-msg" data-emp-id="${m.id}" data-emp-name="${escapeHtml(m.name)}" style="width:14px; height:14px; cursor:pointer; color:#3b82f6;" title="Direct Message"></i>
-                            <i data-lucide="phone" class="member-action-audio" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#10b981;" title="Audio Call"></i>
-                            <i data-lucide="video" class="member-action-video" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#8b5cf6;" title="Video Call"></i>
                             ${removeBtnHtml}
                         </div>
                     `;
@@ -1579,8 +1644,6 @@ function loadDiscussionMembers(discussionId) {
                     const actionBtnsHtml = `
                         <div style="display:flex; gap:8px; align-items:center;">
                             <i data-lucide="message-square" class="member-action-msg" data-emp-id="${m.id}" data-emp-name="${escapeHtml(m.name)}" style="width:14px; height:14px; cursor:pointer; color:#3b82f6;" title="Direct Message"></i>
-                            <i data-lucide="phone" class="member-action-audio" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#10b981;" title="Audio Call"></i>
-                            <i data-lucide="video" class="member-action-video" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#8b5cf6;" title="Video Call"></i>
                             ${addBtnHtml}
                         </div>
                     `;
@@ -1674,66 +1737,52 @@ function bindDiscussionMembersActions(discussionId) {
     document.querySelectorAll('.member-action-msg').forEach(btn => {
         btn.addEventListener('click', async function() {
             const empId = btn.getAttribute('data-emp-id');
-            const empName = btn.getAttribute('data-emp-name');
-            
-            // Generate a shared AES key for the DM
-            try {
-                const aesKeyObj = await generateAESKey();
-                const aesKeyBase64 = await exportAESKey(aesKeyObj);
-                
-                // Fetch target's public key
-                const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${empId}`).then(r=>r.json());
-                const targetPubKey = pkRes.public_key;
-                
-                // Encrypt AES key for self
-                const selfPubKey = localStorage.getItem('e2ee_public_key');
-                const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
-                
-                // Encrypt AES key for target
-                let encTarget = '';
-                if (targetPubKey) {
-                    encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
-                } else {
-                    // Fallback or warning if target has no key yet
-                    alert("User has not set up encryption keys. Cannot create secure chat.");
-                    return;
-                }
-                
-                const formData = new FormData();
-                formData.append('target_employee_id', empId);
-                formData.append('encrypted_key_self', encSelf);
-                formData.append('encrypted_key_target', encTarget);
-                
-                const res = await fetch('api.php?action=create_direct_message', { method: 'POST', body: formData }).then(r=>r.json());
-                
-                if (res.success) {
-                    alert('Direct message thread created/opened!');
-                    window.location.reload();
-                } else {
-                    alert('Error: ' + res.message);
-                }
-            } catch(err) {
-                console.error("DM creation failed:", err);
+            const modal = document.getElementById('modal-discussion-members');
+            if (modal) {
+                modal.classList.remove('active');
             }
+            startDirectChatWithUser(empId);
         });
     });
 
     const meId = window.VYALA_TASKPAD_DASHBOARD_DATA?.meId;
-    document.querySelectorAll('.member-action-audio').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const empId = btn.getAttribute('data-emp-id');
-            const roomId = "direct_" + Math.min(meId, empId) + "_" + Math.max(meId, empId);
-            window.open(`video_call.php?discussion_id=${roomId}&type=audio`, '_blank', 'width=800,height=600');
-        });
-    });
+    
+    // Helper to get or create DM channel supporting E2EE
+    async function getOrCreateDirectChatId(empId) {
+        try {
+            const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${empId}`).then(r => r.json());
+            const targetPubKey = pkRes.public_key;
+            if (targetPubKey) {
+                const aesKeyObj = await generateAESKey();
+                const aesKeyBase64 = await exportAESKey(aesKeyObj);
+                const selfPubKey = localStorage.getItem('e2ee_public_key');
+                if (selfPubKey) {
+                    const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
+                    const encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
+                    const formData = new FormData();
+                    formData.append('target_employee_id', empId);
+                    formData.append('encrypted_key_self', encSelf);
+                    formData.append('encrypted_key_target', encTarget);
+                    const res = await fetch('api.php?action=create_direct_message', { method: 'POST', body: formData }).then(r => r.json());
+                    if (res.success) {
+                        return res.discussion_id;
+                    }
+                }
+            }
+            // Standard direct chat fallback
+            const formData = new FormData();
+            formData.append('user_id', empId);
+            const res = await fetch('api.php?action=start_direct_conversation', { method: 'POST', body: formData }).then(r => r.json());
+            if (res.success) {
+                return res.discussion_id;
+            }
+            return null;
+        } catch(err) {
+            console.error("Failed to get or create DM channel:", err);
+            return null;
+        }
+    }
 
-    document.querySelectorAll('.member-action-video').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const empId = btn.getAttribute('data-emp-id');
-            const roomId = "direct_" + Math.min(meId, empId) + "_" + Math.max(meId, empId);
-            window.open(`video_call.php?discussion_id=${roomId}&type=video`, '_blank', 'width=800,height=600');
-        });
-    });
 }
 
 // ==========================================================================
@@ -1742,9 +1791,9 @@ function bindDiscussionMembersActions(discussionId) {
 let allActiveUsersForDirectChat = [];
 
 function setupDirectChatManager() {
-    const btnNewGroup = document.getElementById('btn-new-group');
-    if (btnNewGroup) {
-        btnNewGroup.addEventListener('click', function() {
+    const btnNewDirectMessage = document.getElementById('btn-new-direct-message');
+    if (btnNewDirectMessage) {
+        btnNewDirectMessage.addEventListener('click', function() {
             loadActiveUsersForDirectChat();
         });
     }
@@ -1858,43 +1907,64 @@ function filterDirectChatUsers() {
 
 async function startDirectChatWithUser(userId) {
     try {
-        const aesKeyObj = await generateAESKey();
-        const aesKeyBase64 = await exportAESKey(aesKeyObj);
-        
-        // Fetch target's public key
-        const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${userId}`).then(r=>r.json());
+        // Fetch target's public key first to see if E2EE is possible
+        const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${userId}`).then(r => r.json());
         const targetPubKey = pkRes.public_key;
-        
-        // Encrypt AES key for self
-        const selfPubKey = localStorage.getItem('e2ee_public_key');
-        const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
-        
-        // Encrypt AES key for target
-        let encTarget = '';
+
         if (targetPubKey) {
-            encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
-        } else {
-            alert("User has not set up encryption keys. Cannot create secure chat.");
-            return;
+            // Generate a shared AES key for E2EE
+            const aesKeyObj = await generateAESKey();
+            const aesKeyBase64 = await exportAESKey(aesKeyObj);
+
+            // Encrypt AES key for self
+            const selfPubKey = localStorage.getItem('e2ee_public_key');
+            if (selfPubKey) {
+                const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
+                const encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
+
+                const formData = new FormData();
+                formData.append('target_employee_id', userId);
+                formData.append('encrypted_key_self', encSelf);
+                formData.append('encrypted_key_target', encTarget);
+
+                const res = await fetch('api.php?action=create_direct_message', {
+                    method: 'POST',
+                    body: formData
+                }).then(r => r.json());
+
+                if (res.success) {
+                    document.getElementById('modal-start-direct-chat').classList.remove('active');
+                    sessionStorage.setItem('active_discussion_id_after_reload', res.discussion_id);
+                    window.location.reload();
+                    return;
+                } else {
+                    alert('Error creating secure chat: ' + res.message);
+                }
+            }
         }
-        
-        const formData = new FormData();
-        formData.append('target_employee_id', userId);
-        formData.append('encrypted_key_self', encSelf);
-        formData.append('encrypted_key_target', encTarget);
-        
-        const res = await fetch('api.php?action=create_direct_message', { method: 'POST', body: formData }).then(r=>r.json());
-        
-        if (res.success) {
-            document.getElementById('modal-start-direct-chat').classList.remove('active');
-            sessionStorage.setItem('active_discussion_id_after_reload', res.discussion_id);
-            window.location.reload();
-        } else {
-            alert('Error: ' + res.message);
+
+        // Fallback or User choice if E2EE is not supported by target
+        const confirmPlain = confirm("The recipient has not generated E2EE keys yet. Would you like to start a standard, non-encrypted conversation?");
+        if (confirmPlain) {
+            const formData = new FormData();
+            formData.append('user_id', userId);
+
+            const res = await fetch('api.php?action=start_direct_conversation', {
+                method: 'POST',
+                body: formData
+            }).then(r => r.json());
+
+            if (res.success) {
+                document.getElementById('modal-start-direct-chat').classList.remove('active');
+                sessionStorage.setItem('active_discussion_id_after_reload', res.discussion_id);
+                window.location.reload();
+            } else {
+                alert('Error: ' + res.message);
+            }
         }
-    } catch(err) {
-        console.error("DM creation failed:", err);
-        alert('Failed to start conversation.');
+    } catch (err) {
+        console.error("Failed to start direct chat:", err);
+        alert('Failed to start conversation. Please try again.');
     }
 }
 
@@ -2522,6 +2592,7 @@ function renderKanban() {
 
     // Define columns
     const columns = [
+        { id: 'Pending', title: 'Pending', color: '#8b5cf6' },
         { id: 'Todo', title: 'Todo', color: '#64748b' },
         { id: 'In Progress', title: 'In Progress', color: '#2563eb' },
         { id: 'In Review', title: 'In Review', color: '#f59e0b' },
@@ -3237,6 +3308,26 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+
+    document.querySelectorAll('.btn-delete-org').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const orgId = this.getAttribute('data-org-id');
+            if (confirm('Are you absolutely sure you want to delete this organization and ALL its projects, tasks, employees, and data? This action CANNOT be undone.')) {
+                const formData = new FormData();
+                formData.append('action', 'delete_org');
+                formData.append('org_id', orgId);
+                fetch('api.php', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        window.location.reload();
+                    } else {
+                        alert(data.message);
+                    }
+                });
+            }
+        });
+    });
 });
 
 // ==========================================================================
@@ -3247,9 +3338,11 @@ function setupLayoutModule() {
     const container = document.getElementById('layout-sequence-container');
     const wrapper = document.getElementById('layout-tasks-wrapper');
     const btnSaveLayout = document.getElementById('btn-save-layout');
+    const btnLoadTimeline = document.getElementById('btn-load-timeline');
 
     if (!btnGenerate || !container || !wrapper || !btnSaveLayout) return;
 
+    // ---- Generate Input Rows ----
     btnGenerate.addEventListener('click', function() {
         const numTasks = parseInt(document.getElementById('layout-num-tasks').value);
         if (isNaN(numTasks) || numTasks <= 0) {
@@ -3260,36 +3353,36 @@ function setupLayoutModule() {
         wrapper.innerHTML = '';
         for (let i = 1; i <= numTasks; i++) {
             const html = `
-                <div class="layout-task-row" style="background: #f8fafc; padding: 15px; border: 1px solid #e2e8f0; border-radius: 6px; display: flex; gap: 15px; align-items: flex-end;">
-                    <div style="font-weight: 700; color: #475569; width: 30px; padding-bottom: 8px;">${i}.</div>
+                <div class="layout-task-row" style="background: #f8fafc; padding: 12px 14px; border: 1px solid #e2e8f0; border-radius: 6px; display: flex; gap: 12px; align-items: flex-end;">
+                    <div style="font-weight: 700; color: #3b82f6; width: 24px; padding-bottom: 8px; font-size:13px;">${i}.</div>
                     <div class="form-group" style="flex: 2; margin-bottom: 0;">
                         <label class="form-label" style="font-size: 11px;">Task Title</label>
-                        <input type="text" class="form-control lq-title" placeholder="e.g. Initial Survey">
+                        <input type="text" class="form-control lq-title" placeholder="e.g. Initial Survey" style="height:34px;">
                     </div>
                     <div class="form-group" style="flex: 1.5; margin-bottom: 0; position: relative;">
-                        <label class="form-label" style="font-size: 11px;">Assignee (Emp ID / Name)</label>
-                        <input type="text" class="form-control lq-assignee-input" placeholder="Type name..." autocomplete="off">
+                        <label class="form-label" style="font-size: 11px;">Assignee</label>
+                        <input type="text" class="form-control lq-assignee-input" placeholder="Type name..." autocomplete="off" style="height:34px;">
                         <input type="hidden" class="lq-assignee-val">
-                        <div class="lq-assignee-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); max-height: 180px; overflow-y: auto; z-index: 9999;"></div>
+                        <div class="lq-assignee-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.12); max-height: 160px; overflow-y: auto; z-index: 9999;"></div>
                     </div>
                     <div class="form-group" style="flex: 1; margin-bottom: 0;">
                         <label class="form-label" style="font-size: 11px;">Priority</label>
-                        <select class="form-control lq-priority">
+                        <select class="form-control lq-priority" style="height:34px;">
                             <option value="Medium">Medium</option>
                             <option value="High">High</option>
                             <option value="Low">Low</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                    <div class="form-group" style="flex: 0 0 80px; margin-bottom: 0;">
                         <label class="form-label" style="font-size: 11px;">Est. Days</label>
-                        <input type="number" class="form-control lq-days" value="1" min="1">
+                        <input type="number" class="form-control lq-days" value="1" min="1" style="height:34px;">
                     </div>
                 </div>
             `;
             wrapper.insertAdjacentHTML('beforeend', html);
         }
 
-        // Setup dropdown events
+        // Setup autocomplete dropdown events
         const rows = wrapper.querySelectorAll('.layout-task-row');
         const employeesList = window.VYALA_TASKPAD_DASHBOARD_DATA?.employees || [];
 
@@ -3308,21 +3401,10 @@ function setupLayoutModule() {
                 } else {
                     filtered.forEach(e => {
                         const item = document.createElement('div');
-                        item.className = 'dropdown-item';
-                        item.style.padding = '8px 12px';
-                        item.style.cursor = 'pointer';
-                        item.style.fontSize = '12px';
-                        item.style.color = '#334155';
-                        item.style.borderBottom = '1px solid #f1f5f9';
+                        item.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:12px;color:#334155;border-bottom:1px solid #f1f5f9;';
                         item.innerText = e.name;
-                        
-                        item.addEventListener('mouseenter', () => {
-                            item.style.background = '#f1f5f9';
-                        });
-                        item.addEventListener('mouseleave', () => {
-                            item.style.background = 'transparent';
-                        });
-
+                        item.addEventListener('mouseenter', () => item.style.background = '#f1f5f9');
+                        item.addEventListener('mouseleave', () => item.style.background = 'transparent');
                         item.addEventListener('mousedown', (evt) => {
                             evt.preventDefault();
                             input.value = e.name;
@@ -3334,40 +3416,22 @@ function setupLayoutModule() {
                 }
             }
 
-            input.addEventListener('focus', () => {
-                renderDropdown(input.value);
-                dropdown.style.display = 'block';
-            });
-
-            input.addEventListener('input', () => {
-                hidden.value = '';
-                renderDropdown(input.value);
-                dropdown.style.display = 'block';
-            });
-
-            input.addEventListener('blur', () => {
-                setTimeout(() => {
-                    dropdown.style.display = 'none';
-                }, 150);
-            });
+            input.addEventListener('focus', () => { renderDropdown(input.value); dropdown.style.display = 'block'; });
+            input.addEventListener('input', () => { hidden.value = ''; renderDropdown(input.value); dropdown.style.display = 'block'; });
+            input.addEventListener('blur', () => { setTimeout(() => { dropdown.style.display = 'none'; }, 150); });
         });
 
         container.style.display = 'block';
     });
 
+    // ---- Save & Generate Timeline ----
     btnSaveLayout.addEventListener('click', function() {
         const projectId = document.getElementById('layout-project').value;
         const startDate = document.getElementById('layout-start-date').value;
         const targetDate = document.getElementById('layout-target-date').value;
 
-        if (!projectId) {
-            alert('Please select a project.');
-            return;
-        }
-        if (!startDate) {
-            alert('Please specify a start date.');
-            return;
-        }
+        if (!projectId) { alert('Please select a project.'); return; }
+        if (!startDate) { alert('Please specify a start date.'); return; }
 
         const taskRows = wrapper.querySelectorAll('.layout-task-row');
         const sequenceData = [];
@@ -3380,11 +3444,7 @@ function setupLayoutModule() {
             if (!assignee && assigneeInput) {
                 const name = assigneeInput.value.toLowerCase().trim();
                 const matched = employeesList.find(e => e.name.toLowerCase() === name);
-                if (matched) {
-                    assignee = matched.id;
-                } else {
-                    assignee = name;
-                }
+                assignee = matched ? matched.id : name;
             }
 
             sequenceData.push({
@@ -3396,13 +3456,13 @@ function setupLayoutModule() {
             });
         });
 
-        // Validate
         for (let t of sequenceData) {
-            if (!t.title) {
-                alert('Please provide titles for all tasks.');
-                return;
-            }
+            if (!t.title) { alert('Please provide titles for all tasks.'); return; }
         }
+
+        const btnText = btnSaveLayout.innerHTML;
+        btnSaveLayout.disabled = true;
+        btnSaveLayout.innerHTML = '⏳ Saving...';
 
         const formData = new FormData();
         formData.append('action', 'save_layout');
@@ -3414,20 +3474,212 @@ function setupLayoutModule() {
         fetch('api.php', { method: 'POST', body: formData })
         .then(r => r.json())
         .then(res => {
+            btnSaveLayout.disabled = false;
+            btnSaveLayout.innerHTML = btnText;
             if (res.success) {
-                alert('Layout sequence saved successfully!');
-                window.location.hash = '#tasks';
-                window.location.reload();
+                // Collapse form
+                container.style.display = 'none';
+                wrapper.innerHTML = '';
+                // Render the timeline
+                renderGanttTimeline(res.project_name || 'Project', res.tasks, startDate, targetDate);
             } else {
                 alert('Error: ' + res.message);
             }
         })
         .catch(err => {
+            btnSaveLayout.disabled = false;
+            btnSaveLayout.innerHTML = btnText;
             console.error(err);
             alert('A network error occurred.');
         });
     });
+
+    // ---- Load Existing Timeline ----
+    if (btnLoadTimeline) {
+        btnLoadTimeline.addEventListener('click', function() {
+            const projectId = document.getElementById('timeline-load-project').value;
+            if (!projectId) { alert('Please select a project to view.'); return; }
+
+            const hint = document.getElementById('timeline-load-hint');
+            if (hint) hint.textContent = '⏳ Loading...';
+            btnLoadTimeline.disabled = true;
+
+            fetch(`api.php?action=get_timeline&project_id=${projectId}`)
+            .then(r => r.json())
+            .then(res => {
+                btnLoadTimeline.disabled = false;
+                if (hint) hint.textContent = 'Select a project and click Load Timeline to view its Gantt chart.';
+                if (res.success) {
+                    if (!res.tasks || res.tasks.length === 0) {
+                        alert('No tasks found for this project. Generate a layout sequence first.');
+                        return;
+                    }
+                    renderGanttTimeline(res.project.name, res.tasks, null, res.project.due_date);
+                } else {
+                    alert('Error: ' + res.message);
+                }
+            })
+            .catch(err => {
+                btnLoadTimeline.disabled = false;
+                if (hint) hint.textContent = 'Select a project and click Load Timeline to view its Gantt chart.';
+                console.error(err);
+                alert('Network error loading timeline.');
+            });
+        });
+    }
 }
+
+// ---- Gantt Timeline Renderer ----
+function renderGanttTimeline(projectName, tasks, startDate, targetDate) {
+    const area = document.getElementById('layout-timeline-area');
+    const chart = document.getElementById('layout-gantt-chart');
+    const titleEl = document.getElementById('tl-project-title');
+    const metaEl = document.getElementById('tl-project-meta');
+
+    if (!area || !chart) return;
+
+    // Determine date range
+    let minDate = null, maxDate = null;
+    tasks.forEach(t => {
+        const due = t.end_date || t.due_date;
+        const start = t.start_date;
+        if (start) { if (!minDate || start < minDate) minDate = start; }
+        if (due)   { if (!maxDate || due > maxDate) maxDate = due; }
+    });
+
+    if (startDate && (!minDate || startDate < minDate)) minDate = startDate;
+    if (!minDate) minDate = new Date().toISOString().slice(0,10);
+    if (!maxDate) maxDate = targetDate || minDate;
+
+    // Expand range by a few days on each side for padding
+    const rangeStart = new Date(minDate);
+    rangeStart.setDate(rangeStart.getDate() - 1);
+    const rangeEnd = new Date(maxDate);
+    rangeEnd.setDate(rangeEnd.getDate() + 2);
+
+    const totalDays = Math.max(Math.ceil((rangeEnd - rangeStart) / 86400000), 7);
+    const dayWidth = Math.max(38, Math.min(70, Math.floor(900 / totalDays)));
+
+    // Build date headers
+    let dateHeaders = '';
+    let dayLabels = '';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const days = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+
+    let prevMonth = -1;
+    const allDates = [];
+    for (let d = new Date(rangeStart); d <= rangeEnd; d.setDate(d.getDate() + 1)) {
+        allDates.push(new Date(d));
+    }
+
+    // Month spans
+    let monthGroups = [];
+    allDates.forEach((d, i) => {
+        const m = d.getMonth();
+        if (m !== prevMonth) {
+            monthGroups.push({ month: m, year: d.getFullYear(), count: 1, startIdx: i });
+            prevMonth = m;
+        } else {
+            monthGroups[monthGroups.length - 1].count++;
+        }
+    });
+
+    const LABEL_COL_W = 200;
+
+    let monthRow = `<div style="display:flex;">`;
+    monthRow += `<div style="width:${LABEL_COL_W}px; min-width:${LABEL_COL_W}px; flex-shrink:0;"></div>`;
+    monthGroups.forEach(mg => {
+        monthRow += `<div style="width:${mg.count * dayWidth}px; min-width:${mg.count * dayWidth}px; text-align:center; font-size:11px; font-weight:700; color:#0f172a; border-left:1px solid #e2e8f0; padding:4px 0; background:#f8fafc;">${months[mg.month]} ${mg.year}</div>`;
+    });
+    monthRow += `</div>`;
+
+    let dayRow = `<div style="display:flex; border-bottom:2px solid #e2e8f0;">`;
+    dayRow += `<div style="width:${LABEL_COL_W}px; min-width:${LABEL_COL_W}px; flex-shrink:0; font-size:10px; font-weight:700; color:#94a3b8; padding:4px 8px; background:#f1f5f9;">TASK</div>`;
+    const today = new Date().toISOString().slice(0,10);
+    allDates.forEach(d => {
+        const iso = d.toISOString().slice(0,10);
+        const isToday = iso === today;
+        const isWeekend = (d.getDay() === 0 || d.getDay() === 6);
+        const bg = isToday ? '#3b82f6' : (isWeekend ? '#f8fafc' : '#fff');
+        const col = isToday ? '#fff' : (isWeekend ? '#94a3b8' : '#475569');
+        dayRow += `<div style="width:${dayWidth}px; min-width:${dayWidth}px; text-align:center; font-size:9px; font-weight:${isToday?700:500}; color:${col}; background:${bg}; border-left:1px solid #f1f5f9; padding:3px 0;">${days[d.getDay()]}<br>${d.getDate()}</div>`;
+    });
+    dayRow += `</div>`;
+
+    // Priority colors
+    const priorityColor = { High: '#ef4444', Medium: '#f59e0b', Low: '#22c55e' };
+    const statusColor   = { 'Todo': '#3b82f6', 'In Progress': '#f59e0b', 'Completed': '#10b981', 'In Review': '#8b5cf6' };
+
+    // Task rows
+    let taskRows = '';
+    tasks.forEach((t, idx) => {
+        const taskStart = new Date(t.start_date || rangeStart.toISOString().slice(0,10));
+        const taskEnd   = new Date(t.end_date   || t.due_date || taskStart);
+
+        const offsetDays = Math.max(0, Math.floor((taskStart - rangeStart) / 86400000));
+        const spanDays   = Math.max(1, Math.ceil((taskEnd   - taskStart)  / 86400000));
+
+        const barLeft   = offsetDays * dayWidth;
+        const barWidth  = spanDays * dayWidth - 2;
+        const pColor    = priorityColor[t.priority] || '#6366f1';
+        const sColor    = statusColor[t.status]     || '#6366f1';
+        const rowBg     = idx % 2 === 0 ? '#fff' : '#fafafa';
+        const assignee  = t.assignee || t.assigned_name || '—';
+        const status    = t.status || 'Todo';
+
+        // Generate day cells for background grid
+        let dayCells = '';
+        allDates.forEach(d => {
+            const isWeekend = (d.getDay() === 0 || d.getDay() === 6);
+            const iso = d.toISOString().slice(0,10);
+            const isToday = iso === today;
+            const cellBg = isToday ? 'rgba(59,130,246,0.06)' : (isWeekend ? '#f8fafc' : 'transparent');
+            dayCells += `<div style="width:${dayWidth}px; min-width:${dayWidth}px; height:44px; border-left:1px solid #f1f5f9; background:${cellBg}; flex-shrink:0;"></div>`;
+        });
+
+        taskRows += `
+        <div style="display:flex; border-bottom:1px solid #f1f5f9; background:${rowBg}; position:relative; align-items:center;">
+            <!-- Label -->
+            <div style="width:${LABEL_COL_W}px; min-width:${LABEL_COL_W}px; flex-shrink:0; padding:6px 10px; z-index:2; background:${rowBg}; border-right:1px solid #e2e8f0;">
+                <div style="font-size:12px; font-weight:600; color:#0f172a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${t.title}">${(t.sequence_order || (idx+1))}. ${t.title}</div>
+                <div style="display:flex; gap:5px; margin-top:3px; align-items:center; flex-wrap:wrap;">
+                    <span style="font-size:9px; background:${pColor}22; color:${pColor}; padding:1px 5px; border-radius:3px; font-weight:600;">${t.priority || 'Med'}</span>
+                    <span style="font-size:9px; background:${sColor}22; color:${sColor}; padding:1px 5px; border-radius:3px; font-weight:600;">${status}</span>
+                    <span style="font-size:9px; color:#94a3b8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${assignee}">👤 ${assignee}</span>
+                </div>
+            </div>
+            <!-- Grid cells -->
+            <div style="display:flex; position:relative; flex:1; height:44px; overflow:hidden;">
+                ${dayCells}
+                <!-- Gantt Bar -->
+                <div style="position:absolute; top:8px; left:${barLeft}px; width:${barWidth}px; height:28px; background:${sColor}; border-radius:5px; display:flex; align-items:center; padding:0 8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.15); z-index:3;" title="${t.title} | ${t.start_date || ''} → ${t.end_date || t.due_date || ''} | ${status}">
+                    <span style="font-size:10px; font-weight:600; color:#fff; white-space:nowrap; text-overflow:ellipsis; overflow:hidden;">${t.title}</span>
+                </div>
+            </div>
+        </div>`;
+    });
+
+    // Assemble chart
+    const taskCount = tasks.length;
+    const projDue = targetDate || (tasks[taskCount-1]?.end_date || tasks[taskCount-1]?.due_date || '');
+    titleEl.textContent = '📋 ' + projectName;
+    metaEl.textContent = `${taskCount} task${taskCount !== 1 ? 's' : ''} · Start: ${startDate || minDate || '—'} · Target: ${projDue || '—'}`;
+
+    chart.innerHTML = `
+    <div style="font-family: inherit; min-width: ${LABEL_COL_W + allDates.length * dayWidth}px;">
+        ${monthRow}
+        ${dayRow}
+        ${taskRows}
+        <div style="display:flex; margin-top:12px; gap:16px; padding:0 4px; flex-wrap:wrap; align-items:center;">
+            <span style="font-size:10px; color:#94a3b8;">📅 Today: ${today}</span>
+            <span style="font-size:10px; color:#94a3b8;">🏗️ ${taskCount} tasks in sequence</span>
+        </div>
+    </div>`;
+
+    area.style.display = 'block';
+    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 
 // ==========================================================================
 // REAL ESTATE MODULES LOGIC
@@ -3659,232 +3911,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // ==========================================
-    // SURVEY MANAGEMENT MODULE
-    // ==========================================
-
-    const btnAddSurvey = document.getElementById('btn-add-survey');
-    if (btnAddSurvey) {
-        btnAddSurvey.addEventListener('click', function() {
-            document.getElementById('form-surveymanagement').reset();
-            document.getElementById('modal-surveymanagement-title').textContent = 'Add Survey Record';
-            document.getElementById('sm-action').value = 'create_survey_record';
-            document.getElementById('sm-id').value = '';
-            document.getElementById('modal-surveymanagement').classList.add('active');
-        });
-    }
-
-    const formSurvey = document.getElementById('form-surveymanagement');
-    if (formSurvey) {
-        formSurvey.addEventListener('submit', function(e) {
-            e.preventDefault();
-            const formData = new FormData(this);
-            fetch('api.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    alert(data.message);
-                    window.location.reload();
-                } else {
-                    alert('Error: ' + (data.message || data.error));
-                }
-            })
-            .catch(err => {
-                console.error(err);
-                alert('An error occurred.');
-            });
-        });
-    }
-
-    document.addEventListener('click', function(e) {
-        // Edit Survey
-        const editBtn = e.target.closest('.edit-survey');
-        if (editBtn) {
-            const data = JSON.parse(editBtn.getAttribute('data-json'));
-            document.getElementById('modal-surveymanagement-title').textContent = 'Edit Survey Record';
-            document.getElementById('sm-action').value = 'update_survey_record';
-            document.getElementById('sm-id').value = data.id;
-            
-            document.getElementById('sm-survey-number').value = data.survey_number || '';
-            document.getElementById('sm-sub-division-number').value = data.sub_division_number || '';
-            document.getElementById('sm-owner-name').value = data.owner_name || '';
-            document.getElementById('sm-village-name').value = data.village_name || '';
-            document.getElementById('sm-taluk').value = data.taluk || '';
-            document.getElementById('sm-district').value = data.district || '';
-            document.getElementById('sm-land-type').value = data.land_type || '';
-            document.getElementById('sm-total-area').value = data.total_area || '';
-            document.getElementById('sm-patta-number').value = data.patta_number || '';
-            document.getElementById('sm-fmb-number').value = data.fmb_number || '';
-            document.getElementById('sm-latitude').value = data.latitude || '';
-            document.getElementById('sm-longitude').value = data.longitude || '';
-            document.getElementById('sm-survey-date').value = data.survey_date || '';
-            document.getElementById('sm-status').value = data.status || 'Pending';
-            document.getElementById('sm-remarks').value = data.remarks || '';
-            
-            document.getElementById('modal-surveymanagement').classList.add('active');
-        }
-
-        // Archive Survey
-        const archiveBtn = e.target.closest('.archive-survey');
-        if (archiveBtn) {
-            if (confirm('Are you sure you want to archive this survey record?')) {
-                const id = archiveBtn.getAttribute('data-id');
-                const formData = new FormData();
-                formData.append('action', 'archive_survey_record');
-                formData.append('id', id);
-                
-                fetch('api.php', { method: 'POST', body: formData })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                        window.location.reload();
-                    } else {
-                        alert('Error: ' + (data.message || data.error));
-                    }
-                });
-            }
-        }
-
-        // Verify Survey
-        const verifyBtn = e.target.closest('.verify-survey');
-        if (verifyBtn) {
-            const id = verifyBtn.getAttribute('data-id');
-            const newStatus = prompt("Enter new status (Pending, Verified, Rejected):", "Verified");
-            if (newStatus && ['Pending', 'Verified', 'Rejected'].includes(newStatus)) {
-                const formData = new FormData();
-                formData.append('action', 'verify_survey_record');
-                formData.append('id', id);
-                formData.append('status', newStatus);
-                
-                fetch('api.php', { method: 'POST', body: formData })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                        window.location.reload();
-                    } else {
-                        alert('Error: ' + (data.message || data.error));
-                    }
-                });
-            } else if (newStatus) {
-                alert("Invalid status. Must be Pending, Verified, or Rejected.");
-            }
-        }
-
-        // History Survey
-        const historyBtn = e.target.closest('.history-survey');
-        if (historyBtn) {
-            const id = historyBtn.getAttribute('data-id');
-            const contentDiv = document.getElementById('survey-history-content');
-            contentDiv.innerHTML = '<p style="text-align:center;">Loading...</p>';
-            document.getElementById('modal-survey-history').classList.add('active');
-            
-            fetch('api.php?action=get_survey_history&id=' + id)
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    if (data.history.length === 0) {
-                        contentDiv.innerHTML = '<p style="text-align:center; color:#64748b;">No history found.</p>';
-                    } else {
-                        let html = '<div style="display:flex; flex-direction:column; gap:12px;">';
-                        data.history.forEach(h => {
-                            html += `
-                                <div style="border-left: 3px solid #3b82f6; padding-left: 12px; margin-bottom: 10px;">
-                                    <div style="font-size: 11px; color: #64748b;">${h.created_at} by ${h.user_name || 'System'}</div>
-                                    <div style="font-weight: 600; color: #0f172a;">${h.action}</div>
-                                    <div style="font-size: 13px; color: #475569;">${h.details || ''}</div>
-                                </div>
-                            `;
-                        });
-                        html += '</div>';
-                        contentDiv.innerHTML = html;
-                    }
-                } else {
-                    contentDiv.innerHTML = '<p style="color:red;">Error loading history.</p>';
-                }
-            });
-        }
-    });
-
-    // Export CSV
-    const btnExportSurvey = document.getElementById('btn-export-survey');
-    if (btnExportSurvey) {
-        btnExportSurvey.addEventListener('click', function() {
-            const number = document.getElementById('filter-survey-number').value;
-            const village = document.getElementById('filter-survey-village').value;
-            const taluk = document.getElementById('filter-survey-taluk').value;
-            const district = document.getElementById('filter-survey-district').value;
-            const status = document.getElementById('filter-survey-status').value;
-            
-            let url = 'api.php?action=export_survey_csv';
-            if (number) url += '&survey_number=' + encodeURIComponent(number);
-            if (village) url += '&village_name=' + encodeURIComponent(village);
-            if (taluk) url += '&taluk=' + encodeURIComponent(taluk);
-            if (district) url += '&district=' + encodeURIComponent(district);
-            if (status) url += '&status=' + encodeURIComponent(status);
-            
-            window.location.href = url;
-        });
-    }
-
-    // Frontend Filtering for Table
-    const filterInputs = [
-        document.getElementById('filter-survey-number'),
-        document.getElementById('filter-survey-village'),
-        document.getElementById('filter-survey-taluk'),
-        document.getElementById('filter-survey-district'),
-        document.getElementById('filter-survey-status')
-    ];
-    
-    function applySurveyFilters() {
-        const numberVal = filterInputs[0].value.toLowerCase();
-        const villageVal = filterInputs[1].value.toLowerCase();
-        const talukVal = filterInputs[2].value.toLowerCase();
-        const districtVal = filterInputs[3].value.toLowerCase();
-        const statusVal = filterInputs[4].value.toLowerCase();
-        
-        const tbody = document.getElementById('survey-management-tbody');
-        if (!tbody) return;
-        
-        const rows = tbody.querySelectorAll('tr');
-        rows.forEach(row => {
-            if (row.cells.length < 5) return; // Skip empty row message
-            
-            const textNumber = row.cells[0].textContent.toLowerCase();
-            const textVillage = row.cells[2].textContent.split(',')[0].toLowerCase(); // Hacky but works for village text
-            const textTalukDistrict = row.cells[2].textContent.toLowerCase();
-            const textStatus = row.cells[4].textContent.toLowerCase();
-            
-            let match = true;
-            if (numberVal && !textNumber.includes(numberVal)) match = false;
-            if (villageVal && !textTalukDistrict.includes(villageVal)) match = false;
-            if (talukVal && !textTalukDistrict.includes(talukVal)) match = false;
-            if (districtVal && !textTalukDistrict.includes(districtVal)) match = false;
-            if (statusVal && !textStatus.includes(statusVal)) match = false;
-            
-            row.style.display = match ? '' : 'none';
-        });
-    }
-
-    filterInputs.forEach(input => {
-        if (input) {
-            input.addEventListener('input', applySurveyFilters);
-            input.addEventListener('change', applySurveyFilters);
-        }
-    });
-
-    const btnClearFilters = document.getElementById('btn-clear-survey-filters');
-    if (btnClearFilters) {
-        btnClearFilters.addEventListener('click', function() {
-            filterInputs.forEach(input => { if (input) input.value = ''; });
-            applySurveyFilters();
-        });
-    }
-
 });
 
 function setupDashboardTriggers() {
@@ -3923,6 +3949,42 @@ function setupDashboardTriggers() {
             const target = trigger.getAttribute('data-target');
             const statusFilter = trigger.getAttribute('data-filter-status');
             
+            if (target === 'projects') {
+                const isOrgAdmin = (window.VYALA_USER_ROLE === 'Project Lead');
+                if (isOrgAdmin) {
+                    // Organization admin: Switch sub-tab to "All Projects"
+                    const allProjectsTab = Array.from(document.querySelectorAll('.proj-tab-btn'))
+                        .find(el => el.textContent.trim() === 'All Projects');
+                    if (allProjectsTab) {
+                        document.querySelectorAll('.proj-tab-btn').forEach(t => {
+                            t.classList.remove('active');
+                            t.style.color = '#64748b';
+                            t.style.borderBottom = 'none';
+                        });
+                        allProjectsTab.classList.add('active');
+                        allProjectsTab.style.color = '#2563eb';
+                        allProjectsTab.style.borderBottom = '2px solid #2563eb';
+                    }
+                } else {
+                    // Standard employee: Switch sub-tab to "Created By Me" if current tab is invalid
+                    const activeTab = document.querySelector('.proj-tab-btn.active');
+                    if (!activeTab || activeTab.textContent.trim() === 'All Projects') {
+                        const createdByMeTab = Array.from(document.querySelectorAll('.proj-tab-btn'))
+                            .find(el => el.textContent.trim() === 'Created By Me');
+                        if (createdByMeTab) {
+                            document.querySelectorAll('.proj-tab-btn').forEach(t => {
+                                t.classList.remove('active');
+                                t.style.color = '#64748b';
+                                t.style.borderBottom = 'none';
+                            });
+                            createdByMeTab.classList.add('active');
+                            createdByMeTab.style.color = '#2563eb';
+                            createdByMeTab.style.borderBottom = '2px solid #2563eb';
+                        }
+                    }
+                }
+            }
+
             if (statusFilter && typeof currentProjectsFilterStatus !== 'undefined') {
                 currentProjectsFilterStatus = statusFilter;
                 const statusBtn = document.getElementById('projects-status-filter-toggle');
@@ -3993,4 +4055,228 @@ function setupTaskEditFeatures() {
             }
         }
     });
+}
+
+function setupSurveyManagement() {
+    const btnAddSurvey = document.getElementById('btn-add-survey');
+    if (btnAddSurvey) {
+        btnAddSurvey.addEventListener('click', function() {
+            document.getElementById('form-surveymanagement').reset();
+            document.getElementById('modal-surveymanagement-title').textContent = 'Add Survey Record';
+            document.getElementById('sm-action').value = 'create_survey_record';
+            document.getElementById('sm-id').value = '';
+            document.getElementById('modal-surveymanagement').classList.add('active');
+        });
+    }
+
+    const formSurvey = document.getElementById('form-surveymanagement');
+    if (formSurvey) {
+        formSurvey.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            fetch('api.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(err => {
+                console.error(err);
+                alert('An error occurred.');
+            });
+        });
+    }
+
+    document.addEventListener('click', function(e) {
+        // Edit Survey
+        const editBtn = e.target.closest('.edit-survey');
+        if (editBtn) {
+            const data = JSON.parse(editBtn.getAttribute('data-json'));
+            document.getElementById('modal-surveymanagement-title').textContent = 'Edit Survey Record';
+            document.getElementById('sm-action').value = 'update_survey_record';
+            document.getElementById('sm-id').value = data.id;
+            
+            document.getElementById('sm-survey-number').value = data.survey_number || '';
+            document.getElementById('sm-sub-division-number').value = data.sub_division_number || '';
+            document.getElementById('sm-owner-name').value = data.owner_name || '';
+            document.getElementById('sm-village-name').value = data.village_name || '';
+            document.getElementById('sm-taluk').value = data.taluk || '';
+            document.getElementById('sm-district').value = data.district || '';
+            document.getElementById('sm-land-type').value = data.land_type || '';
+            document.getElementById('sm-total-area').value = data.total_area || '';
+            document.getElementById('sm-patta-number').value = data.patta_number || '';
+            document.getElementById('sm-fmb-number').value = data.fmb_number || '';
+            document.getElementById('sm-latitude').value = data.latitude || '';
+            document.getElementById('sm-longitude').value = data.longitude || '';
+            document.getElementById('sm-survey-date').value = data.survey_date || '';
+            document.getElementById('sm-status').value = data.status || 'Pending';
+            document.getElementById('sm-remarks').value = data.remarks || '';
+            
+            document.getElementById('modal-surveymanagement').classList.add('active');
+        }
+
+        // Archive Survey
+        const archiveBtn = e.target.closest('.archive-survey');
+        if (archiveBtn) {
+            if (confirm('Are you sure you want to archive this survey record?')) {
+                const id = archiveBtn.getAttribute('data-id');
+                const formData = new FormData();
+                formData.append('action', 'archive_survey_record');
+                formData.append('id', id);
+                
+                fetch('api.php', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                        window.location.reload();
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                });
+            }
+        }
+
+        // Verify Survey
+        const verifyBtn = e.target.closest('.verify-survey');
+        if (verifyBtn) {
+            const id = verifyBtn.getAttribute('data-id');
+            const newStatus = prompt("Enter new status (Pending, Verified, Rejected):", "Verified");
+            if (newStatus && ['Pending', 'Verified', 'Rejected'].includes(newStatus)) {
+                const formData = new FormData();
+                formData.append('action', 'verify_survey_record');
+                formData.append('id', id);
+                formData.append('status', newStatus);
+                
+                fetch('api.php', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                        window.location.reload();
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                });
+            } else if (newStatus) {
+                alert("Invalid status. Must be Pending, Verified, or Rejected.");
+            }
+        }
+
+        // History Survey
+        const historyBtn = e.target.closest('.history-survey');
+        if (historyBtn) {
+            const id = historyBtn.getAttribute('data-id');
+            const contentDiv = document.getElementById('survey-history-content');
+            contentDiv.innerHTML = '<p style="text-align:center;">Loading...</p>';
+            document.getElementById('modal-survey-history').classList.add('active');
+            
+            fetch('api.php?action=get_survey_history&id=' + id)
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    if (data.history.length === 0) {
+                        contentDiv.innerHTML = '<p style="text-align:center; color:#64748b;">No history found.</p>';
+                    } else {
+                        let html = '<div style="display:flex; flex-direction:column; gap:12px;">';
+                        data.history.forEach(h => {
+                            html += `
+                                <div style="border-left: 3px solid #3b82f6; padding-left: 12px; margin-bottom: 10px;">
+                                    <div style="font-size: 11px; color: #64748b;">\${h.created_at} by \${h.user_name || 'System'}</div>
+                                    <div style="font-weight: 600; color: #0f172a;">\${h.action}</div>
+                                    <div style="font-size: 13px; color: #475569;">\${h.details || ''}</div>
+                                </div>
+                            `;
+                        });
+                        html += '</div>';
+                        contentDiv.innerHTML = html;
+                    }
+                } else {
+                    contentDiv.innerHTML = '<p style="color:red;">Error loading history.</p>';
+                }
+            });
+        }
+    });
+
+    // Export CSV
+    const btnExportSurvey = document.getElementById('btn-export-survey');
+    if (btnExportSurvey) {
+        btnExportSurvey.addEventListener('click', function() {
+            const number = document.getElementById('filter-survey-number').value;
+            const village = document.getElementById('filter-survey-village').value;
+            const taluk = document.getElementById('filter-survey-taluk').value;
+            const district = document.getElementById('filter-survey-district').value;
+            const status = document.getElementById('filter-survey-status').value;
+            
+            let url = 'api.php?action=export_survey_csv';
+            if (number) url += '&survey_number=' + encodeURIComponent(number);
+            if (village) url += '&village_name=' + encodeURIComponent(village);
+            if (taluk) url += '&taluk=' + encodeURIComponent(taluk);
+            if (district) url += '&district=' + encodeURIComponent(district);
+            if (status) url += '&status=' + encodeURIComponent(status);
+            
+            window.location.href = url;
+        });
+    }
+
+    // Frontend Filtering for Table
+    const filterInputs = [
+        document.getElementById('filter-survey-number'),
+        document.getElementById('filter-survey-village'),
+        document.getElementById('filter-survey-taluk'),
+        document.getElementById('filter-survey-district'),
+        document.getElementById('filter-survey-status')
+    ];
+    
+    function applySurveyFilters() {
+        const numberVal = filterInputs[0].value.toLowerCase();
+        const villageVal = filterInputs[1].value.toLowerCase();
+        const talukVal = filterInputs[2].value.toLowerCase();
+        const districtVal = filterInputs[3].value.toLowerCase();
+        const statusVal = filterInputs[4].value.toLowerCase();
+        
+        const tbody = document.getElementById('survey-management-tbody');
+        if (!tbody) return;
+        
+        const rows = tbody.querySelectorAll('tr');
+        rows.forEach(row => {
+            if (row.cells.length < 5) return; // Skip empty row message
+            
+            const textNumber = row.cells[0].textContent.toLowerCase();
+            const textVillage = row.cells[2].textContent.split(',')[0].toLowerCase();
+            const textTalukDistrict = row.cells[2].textContent.toLowerCase();
+            const textStatus = row.cells[4].textContent.toLowerCase();
+            
+            let match = true;
+            if (numberVal && !textNumber.includes(numberVal)) match = false;
+            if (villageVal && !textTalukDistrict.includes(villageVal)) match = false;
+            if (talukVal && !textTalukDistrict.includes(talukVal)) match = false;
+            if (districtVal && !textTalukDistrict.includes(districtVal)) match = false;
+            if (statusVal && !textStatus.includes(statusVal)) match = false;
+            
+            row.style.display = match ? '' : 'none';
+        });
+    }
+
+    filterInputs.forEach(input => {
+        if (input) {
+            input.addEventListener('input', applySurveyFilters);
+            input.addEventListener('change', applySurveyFilters);
+        }
+    });
+
+    const btnClearFilters = document.getElementById('btn-clear-survey-filters');
+    if (btnClearFilters) {
+        btnClearFilters.addEventListener('click', function() {
+            filterInputs.forEach(input => { if (input) input.value = ''; });
+            applySurveyFilters();
+        });
+    }
 }

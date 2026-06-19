@@ -47,26 +47,32 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
     <!-- Navigation Menu -->
     <nav class="sidebar-nav" style="margin-top: 10px;">
         <ul>
-            <?php if ($jwtPayload['role'] !== 'Admin'): ?>
+            <?php if ($jwtPayload['role'] !== 'Super Admin' && $jwtPayload['role'] !== 'Admin'): ?>
+                <!-- Dashboard is visible to standard employees and Project Leads -->
                 <li class="nav-item active" data-tab="dashboard">
                     <a href="#dashboard">
                         <i data-lucide="layout-dashboard"></i>
                         <span>Dashboard</span>
                     </a>
                 </li>
+            <?php endif; ?>
 
+            <?php if ($jwtPayload['role'] !== 'Super Admin' && $jwtPayload['role'] !== 'Admin'): ?>
+                <!-- Standard employee tools (hidden from Admin and Super Admin roles) -->
                 <li class="nav-item" data-tab="projects">
                     <a href="#projects">
                         <i data-lucide="folder"></i>
                         <span>Projects</span>
                     </a>
                 </li>
+
                 <li class="nav-item" data-tab="tasks">
                     <a href="#tasks">
                         <i data-lucide="check-square"></i>
                         <span>Tasks & Reminders</span>
                     </a>
                 </li>
+
                 <li class="nav-item" data-tab="layout">
                     <a href="#layout">
                         <i data-lucide="layout"></i>
@@ -109,7 +115,6 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
                         <span>Documents</span>
                     </a>
                 </li>
-
                 <li class="nav-item" data-tab="discussion">
                     <a href="#discussion">
                         <i data-lucide="message-square"></i>
@@ -122,7 +127,6 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
                         <span>Notes</span>
                     </a>
                 </li>
-
                 <li class="nav-item" data-tab="surveymanagement">
                     <a href="#surveymanagement">
                         <i data-lucide="clipboard-list"></i>
@@ -148,12 +152,14 @@ if (isset($pdo) && isset($jwtPayload['org_id']) && $jwtPayload['org_id'] > 0) {
                         <span>Settings</span>
                     </a>
                 </li>
-            <?php else: ?>
-                <!-- Platform Admin: sees only Organizations -->
-                <li class="nav-item active" data-tab="organizations">
+            <?php endif; ?>
+
+            <?php if ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Super Admin' || $jwtPayload['role'] === 'Project Lead'): ?>
+                <!-- Organizations / Organization Details visibility -->
+                <li class="nav-item" data-tab="organizations">
                     <a href="#organizations">
                         <i data-lucide="building-2"></i>
-                        <span>Organizations</span>
+                        <span><?= ($jwtPayload['role'] === 'Project Lead') ? 'Organization Details' : 'Organizations' ?></span>
                     </a>
                 </li>
             <?php endif; ?>

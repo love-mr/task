@@ -1,13 +1,65 @@
 <?php
 // db.php
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/jwt.php';
 date_default_timezone_set('Asia/Kolkata');
+
+// Custom Query Rewriter for Super Admin Global View
+class MyPDOQueryRewriter {
+    public static function rewrite($query) {
+        if (!preg_match('/^\s*\(?\s*select\b/i', $query)) {
+            return $query;
+        }
+        
+        $isGlobalSuperAdmin = false;
+        $jwtToken = $_COOKIE['vyala_taskpad_jwt_token'] ?? '';
+        if (!empty($jwtToken)) {
+            $jwtPayload = verify_jwt($jwtToken);
+            if ($jwtPayload && isset($jwtPayload['role']) && $jwtPayload['role'] === 'Super Admin' && isset($jwtPayload['org_id']) && (int)$jwtPayload['org_id'] === 0) {
+                $isGlobalSuperAdmin = true;
+            }
+        }
+        
+        if ($isGlobalSuperAdmin) {
+            $query = preg_replace_callback('/(?:\b|`)(?:`?\w+`?\.)?`?org_id`?\s*=\s*(\?|0)(?!\w)/', function($matches) {
+                $val = $matches[1];
+                if ($val === '?') {
+                    return '(? IS NOT NULL OR 1=1)';
+                } else {
+                    return '(1=1)';
+                }
+            }, $query);
+        }
+        
+        return $query;
+    }
+}
+
+class MyPDO extends PDO {
+    public function prepare($query, $options = []) {
+        $query = MyPDOQueryRewriter::rewrite($query);
+        return parent::prepare($query, $options);
+    }
+    public function query($query, $fetchMode = null, ...$fetchModeArgs) {
+        $query = MyPDOQueryRewriter::rewrite($query);
+        if ($fetchMode === null) {
+            return parent::query($query);
+        }
+        return parent::query($query, $fetchMode, ...$fetchModeArgs);
+    }
+    public function exec($statement) {
+        $statement = MyPDOQueryRewriter::rewrite($statement);
+        return parent::exec($statement);
+    }
+}
+
 $host = '127.0.0.1';
 $user = 'root';
 $pass = '';
 
 try {
     // Connect to MySQL server without database first
-    $pdo = new PDO("mysql:host=$host", $user, $pass);
+    $pdo = new MyPDO("mysql:host=$host", $user, $pass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
     // Create database if not exists
@@ -39,6 +91,7 @@ try {
         `created_by` INT DEFAULT NULL,
         `assigned_to` INT DEFAULT NULL,
         `due_date` DATE DEFAULT NULL,
+        `fee_amount` DECIMAL(15,2) DEFAULT 0.00,
         `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX (`client_id`),
         INDEX (`created_by`),
@@ -103,6 +156,7 @@ try {
         `attachment_name` VARCHAR(255) DEFAULT NULL,
         `attachment_type` VARCHAR(50) DEFAULT NULL, -- pdf, dwg, doc, image, etc.
         `date_logged` VARCHAR(100) DEFAULT NULL,
+        `is_direct` TINYINT(1) NOT NULL DEFAULT 0,
         `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB;");
 
@@ -195,6 +249,135 @@ try {
         INDEX (`employee_id`)
     ) ENGINE=InnoDB;");
 
+    // Create discussion_keys table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `discussion_keys` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `discussion_id` INT NOT NULL,
+        `employee_id` INT NOT NULL,
+        `encrypted_key` TEXT NOT NULL,
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY `uniq_disc_emp_key` (`discussion_id`, `employee_id`),
+        INDEX (`discussion_id`),
+        INDEX (`employee_id`)
+    ) ENGINE=InnoDB;");
+
+    // Create calls table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `calls` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `discussion_id` INT NOT NULL,
+        `caller_id` INT NOT NULL,
+        `type` VARCHAR(50) NOT NULL,
+        `status` VARCHAR(50) NOT NULL DEFAULT 'ringing',
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (`discussion_id`),
+        INDEX (`caller_id`),
+        INDEX (`status`)
+    ) ENGINE=InnoDB;");
+
+    // Create goal_tracker table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `goal_tracker` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `org_id` INT NOT NULL DEFAULT 1,
+        `title` VARCHAR(255) NOT NULL,
+        `description` TEXT DEFAULT NULL,
+        `start_date` DATE NOT NULL,
+        `target_date` DATE NOT NULL,
+        `actual_completion_date` DATE DEFAULT NULL,
+        `progress` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        `status` ENUM('Not Started','In Progress','Completed','Overdue') NOT NULL DEFAULT 'Not Started',
+        `created_by` INT DEFAULT NULL,
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (`org_id`),
+        INDEX (`status`)
+    ) ENGINE=InnoDB;");
+
+    // Create document_logs table for audit trail
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `document_logs` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `doc_id` INT NOT NULL,
+        `employee_id` INT DEFAULT NULL,
+        `action` ENUM('upload','download','delete','edit','view') NOT NULL DEFAULT 'upload',
+        `ip_address` VARCHAR(45) DEFAULT NULL,
+        `org_id` INT NOT NULL DEFAULT 1,
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (`doc_id`),
+        INDEX (`employee_id`),
+        INDEX (`org_id`)
+    ) ENGINE=InnoDB;");
+
+    // Create survey_management table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `survey_management` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `survey_number` VARCHAR(100) NOT NULL,
+        `sub_division_number` VARCHAR(100) DEFAULT NULL,
+        `owner_name` VARCHAR(255) DEFAULT NULL,
+        `village_name` VARCHAR(255) DEFAULT NULL,
+        `taluk` VARCHAR(255) DEFAULT NULL,
+        `district` VARCHAR(255) DEFAULT NULL,
+        `land_type` VARCHAR(100) DEFAULT NULL,
+        `total_area` DECIMAL(10,2) DEFAULT 0.00,
+        `patta_number` VARCHAR(100) DEFAULT NULL,
+        `fmb_number` VARCHAR(100) DEFAULT NULL,
+        `latitude` VARCHAR(50) DEFAULT NULL,
+        `longitude` VARCHAR(50) DEFAULT NULL,
+        `survey_date` DATE DEFAULT NULL,
+        `status` ENUM('Pending','Verified','Rejected') NOT NULL DEFAULT 'Pending',
+        `remarks` TEXT DEFAULT NULL,
+        `document_path` VARCHAR(500) DEFAULT NULL,
+        `org_id` INT NOT NULL DEFAULT 1,
+        `is_archived` TINYINT(1) NOT NULL DEFAULT 0,
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (`org_id`),
+        INDEX (`status`)
+    ) ENGINE=InnoDB;");
+
+    // Create survey_history table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `survey_history` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `survey_id` INT NOT NULL,
+        `action` VARCHAR(255) NOT NULL,
+        `performed_by` VARCHAR(255) DEFAULT NULL,
+        `details` TEXT DEFAULT NULL,
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (`survey_id`)
+    ) ENGINE=InnoDB;");
+
+    // 3. Alter tables to add columns safely without using unsupported IF NOT EXISTS syntax in ALTER TABLE
+    $tablesToAlter = [
+        'organizations' => ['phone' => 'VARCHAR(50) DEFAULT NULL', 'address' => 'TEXT DEFAULT NULL', 'details' => 'TEXT DEFAULT NULL'],
+        'employees' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'status' => "VARCHAR(50) NOT NULL DEFAULT 'Active'"],
+        'projects' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'fee_amount' => 'DECIMAL(15,2) DEFAULT 0.00'],
+        'tasks' => [
+            'org_id' => 'INT NOT NULL DEFAULT 1',
+            'estimated_duration' => 'INT DEFAULT 0',
+            'sequence_order' => 'INT DEFAULT 0',
+            'depends_on' => 'INT DEFAULT NULL',
+            'actual_start_date' => 'DATE DEFAULT NULL',
+            'actual_completion_date' => 'DATE DEFAULT NULL'
+        ],
+        'documents' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'encrypted' => "TINYINT(1) NOT NULL DEFAULT 0", 'enc_iv' => 'VARCHAR(255) DEFAULT NULL', 'original_name' => 'VARCHAR(255) DEFAULT NULL', 'mime_type' => 'VARCHAR(100) DEFAULT NULL'],
+        'discussions' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'is_direct' => 'TINYINT(1) NOT NULL DEFAULT 0'],
+        'pin_notes' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'clients' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'activities' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'attendance' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'timesheets' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'notifications' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'goal_tracker' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'document_logs' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+    ];
+
+    foreach ($tablesToAlter as $tbl => $cols) {
+        foreach ($cols as $colName => $colDef) {
+            try {
+                $checkCol = $pdo->query("SHOW COLUMNS FROM `$tbl` LIKE '$colName'")->fetch();
+                if (!$checkCol) {
+                    $pdo->exec("ALTER TABLE `$tbl` ADD COLUMN `$colName` $colDef");
+                }
+            } catch (PDOException $e) {}
+        }
+    }
+
 } catch (PDOException $e) {
     die("Database Connection failed: " . $e->getMessage());
 }
@@ -271,6 +454,19 @@ if (!function_exists('time_elapsed_string')) {
 
         if (!$full) $string = array_slice($string, 0, 1);
         return $string ? implode(', ', $string) . ' ago' : 'just now';
+    }
+}
+
+if (!function_exists('render_avatar')) {
+    function render_avatar($avatar, $name, $extraStyles = '', $extraClasses = '') {
+        $initials = strtoupper(substr(trim($name), 0, 2));
+        if (empty($initials)) {
+            $initials = 'U';
+        }
+        if ($avatar && (strpos($avatar, '.') !== false || strpos($avatar, 'uploads/') !== false)) {
+            return '<img src="' . htmlspecialchars($avatar) . '" alt="' . htmlspecialchars($name) . '" class="' . htmlspecialchars($extraClasses) . '" style="object-fit: cover; border-radius: 50%; ' . $extraStyles . '">';
+        }
+        return '<div class="' . htmlspecialchars($extraClasses) . '" style="display: flex; align-items: center; justify-content: center; border-radius: 50%; ' . $extraStyles . '">' . htmlspecialchars($avatar ?: $initials) . '</div>';
     }
 }
 
