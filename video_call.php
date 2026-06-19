@@ -1,30 +1,32 @@
 <?php
-session_start();
 require_once 'db.php';
+require_once 'jwt.php';
 
-if (!isset($_SESSION['employee_id'])) {
+$jwtToken = $_COOKIE['vyala_taskpad_jwt_token'] ?? '';
+$jwtPayload = verify_jwt($jwtToken);
+if (!$jwtPayload) {
     die("Unauthorized.");
 }
 
-$discId = (int)($_GET['discussion_id'] ?? 0);
+$discId = $_GET['discussion_id'] ?? '';
 $type = $_GET['type'] ?? 'video'; // 'audio' or 'video'
 
-if (!$discId) {
+if (empty($discId)) {
     die("Discussion ID is required.");
 }
 
-$meId = $_SESSION['employee_id'];
+$meId = $jwtPayload['id'];
 
 // Get user info
-$stmt = $pdo->prepare("SELECT first_name, last_name, avatar FROM employees WHERE id = ?");
+$stmt = $pdo->prepare("SELECT name, avatar FROM employees WHERE id = ?");
 $stmt->execute([$meId]);
 $me = $stmt->fetch(PDO::FETCH_ASSOC);
-$myName = $me ? ($me['first_name'] . ' ' . $me['last_name']) : 'User ' . $meId;
-$myInitials = $me['avatar'] ?: strtoupper(substr($me['first_name'] ?? 'U', 0, 1) . substr($me['last_name'] ?? '', 0, 1));
+$myName = $me ? $me['name'] : ($jwtPayload['name'] ?? 'User ' . $meId);
+$myInitials = ($me && $me['avatar']) ? $me['avatar'] : strtoupper(substr($myName, 0, 2));
 
 // Generate a random room ID based on the discussion ID
 // In a real app, this should be synced or retrieved from the server so all members join the same room.
-$roomID = "discussion_" . $discId;
+$roomID = "discussion_" . preg_replace('/[^a-zA-Z0-9_\-]/', '', $discId);
 
 // ZEGOCLOUD App ID and Server Secret (Placeholders)
 // The user will need to replace these with their actual ZegoCloud credentials

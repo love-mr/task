@@ -15,12 +15,22 @@ if (!$jwtPayload) {
 
 $meId = $jwtPayload['id'];
 $meName = $jwtPayload['name'];
+$meAvatar = 'U';
 
 require_once 'db.php';
 
 try {
     $isAdmin = ($jwtPayload['role'] === 'Admin');
     $meOrgId = (int) ($jwtPayload['org_id'] ?? 1);
+
+    // Fetch logged-in user avatar
+    try {
+        $stmtMe = $pdo->prepare("SELECT avatar FROM employees WHERE id = ?");
+        $stmtMe->execute([$meId]);
+        $meAvatar = $stmtMe->fetchColumn() ?: 'U';
+    } catch (PDOException $e) {
+        // Fallback if query fails
+    }
 
     // =====================================================================
     // MULTI-TENANT DB SETUP (auto-run, safe with IF NOT EXISTS)
@@ -2066,7 +2076,7 @@ try {
                                                 style="background: transparent; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-muted);"><i
                                                     data-lucide="paperclip" style="width: 18px; height: 18px;"></i></button>
                                             <input type="text" id="chat-text-input" name="message" class="chat-text-input"
-                                                placeholder="Type a message here..." style="flex: 1;" required>
+                                                placeholder="Type a message here..." style="flex: 1;">
                                             <button type="button" class="chat-input-btn" title="Emoji"
                                                 style="background: transparent; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-muted);"><i
                                                     data-lucide="smile" style="width: 18px; height: 18px;"></i></button>
@@ -3291,64 +3301,98 @@ try {
          TAB: BUILDING MODULE
          ========================================================================== -->
                 <div id="view-building" class="tab-view">
-                    <div class="view-header">
-                        <h2>Building Module</h2>
-                        <div class="header-actions">
-                            <div class="search-box">
-                                <i data-lucide="search"></i>
-                                <input type="text" id="building-search" placeholder="Search Buildings...">
-                            </div>
-                            <button class="btn btn-primary" id="btn-add-building"><i data-lucide="plus"></i> Add
-                                Building</button>
+                    <div class="view-header"
+                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2 style="font-size: 24px; font-weight: 700; color: #0f172a; margin: 0;">Building Module</h2>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary" id="btn-add-building"
+                                style="background-color: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+                                <i data-lucide="plus"></i> Add Building
+                            </button>
                         </div>
                     </div>
-                    <div class="card" style="margin-top: 20px;">
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>ID</th>
-                                        <th>Name</th>
-                                        <th>Type</th>
-                                        <th>Total Units</th>
-                                        <th>Owner</th>
-                                        <th>Status</th>
-                                        <th>Actions</th>
+
+                    <!-- Filter Bar -->
+                    <div
+                        style="background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <input type="text" id="building-search" placeholder="Search Buildings..."
+                            style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; flex: 1; min-width: 150px;">
+                    </div>
+
+                    <div
+                        style="background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; color: #475569;">
+                                    <th style="padding: 12px 16px;">ID</th>
+                                    <th style="padding: 12px 16px;">Name</th>
+                                    <th style="padding: 12px 16px;">Type</th>
+                                    <th style="padding: 12px 16px;">Total Units</th>
+                                    <th style="padding: 12px 16px;">Owner</th>
+                                    <th style="padding: 12px 16px;">Status</th>
+                                    <th style="padding: 12px 16px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="buildings-tbody">
+                                <?php foreach ($buildingsList as $b): ?>
+                                    <tr style="border-bottom: 1px solid #f1f5f9;">
+                                        <td style="padding: 12px 16px; color: #64748b;">#<?= $b['id'] ?></td>
+                                        <td style="padding: 12px 16px;">
+                                            <div style="font-weight: 600; color: #0f172a;">
+                                                <?= htmlspecialchars($b['name']) ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($b['type']) ?></td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($b['total_units']) ?></td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($b['owner_name']) ?></td>
+                                        <td style="padding: 12px 16px;">
+                                            <?php
+                                            $status = strtolower($b['status']);
+                                            $color = '#64748b';
+                                            $bg = '#f1f5f9';
+                                            if ($status === 'available') {
+                                                $color = '#15803d';
+                                                $bg = '#dcfce7';
+                                            } elseif ($status === 'sold') {
+                                                $color = '#b91c1c';
+                                                $bg = '#fee2e2';
+                                            } else { // Rented or other
+                                                $color = '#b45309';
+                                                $bg = '#fef3c7';
+                                            }
+                                            ?>
+                                            <span
+                                                style="display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; color: <?= $color ?>; background: <?= $bg ?>;">
+                                                <?= htmlspecialchars($b['status']) ?>
+                                            </span>
+                                        </td>
+                                        <td style="padding: 12px 16px; display: flex; gap: 8px;">
+                                            <button class="btn-icon btn-edit-building" data-id="<?= $b['id'] ?>"
+                                                data-json='<?= json_encode($b, JSON_HEX_APOS) ?>'
+                                                style="background:none; border:none; color:#3b82f6; cursor:pointer;"
+                                                title="Edit">
+                                                <i data-lucide="edit-3" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <button class="btn-icon btn-delete-building" data-id="<?= $b['id'] ?>"
+                                                style="background:none; border:none; color:#ef4444; cursor:pointer;"
+                                                title="Delete">
+                                                <i data-lucide="trash-2" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <?php if ($b['document_path']): ?>
+                                                <a href="<?= htmlspecialchars($b['document_path']) ?>" target="_blank"
+                                                    style="color:#06b6d4;" title="View Document">
+                                                    <i data-lucide="file-text" style="width:16px;height:16px;"></i>
+                                                </a>
+                                            <?php endif; ?>
+                                        </td>
                                     </tr>
-                                </thead>
-                                <tbody id="buildings-tbody">
-                                    <?php foreach ($buildingsList as $b): ?>
-                                        <tr>
-                                            <td>#<?= $b['id'] ?></td>
-                                            <td><?= htmlspecialchars($b['name']) ?></td>
-                                            <td><?= htmlspecialchars($b['type']) ?></td>
-                                            <td><?= htmlspecialchars($b['total_units']) ?></td>
-                                            <td><?= htmlspecialchars($b['owner_name']) ?></td>
-                                            <td><span
-                                                    class="badge badge-<?= strtolower($b['status']) === 'available' ? 'success' : (strtolower($b['status']) === 'sold' ? 'danger' : 'warning') ?>"><?= htmlspecialchars($b['status']) ?></span>
-                                            </td>
-                                            <td>
-                                                <button class="btn-icon btn-edit-building" data-id="<?= $b['id'] ?>"
-                                                    data-json='<?= json_encode($b, JSON_HEX_APOS) ?>'><i
-                                                        data-lucide="edit-2"></i></button>
-                                                <button class="btn-icon btn-delete-building" data-id="<?= $b['id'] ?>"><i
-                                                        data-lucide="trash-2" style="color:#ef4444;"></i></button>
-                                                <?php if ($b['document_path']): ?>
-                                                    <a href="<?= htmlspecialchars($b['document_path']) ?>" target="_blank"
-                                                        class="btn-icon" title="View Document"><i
-                                                            data-lucide="file-text"></i></a>
-                                                <?php endif; ?>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                    <?php if (empty($buildingsList)): ?>
-                                        <tr>
-                                            <td colspan="7" style="text-align:center;">No buildings found.</td>
-                                        </tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
+                                <?php endforeach; ?>
+                                <?php if (empty($buildingsList)): ?>
+                                    <tr>
+                                        <td colspan="7" style="padding: 30px; text-align: center; color: #94a3b8;">No buildings found.</td>
+                                    </tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -3402,57 +3446,87 @@ try {
          TAB: SINGLE PLOT MODULE
          ========================================================================== -->
                 <div id="view-singleplot" class="tab-view">
-                    <div class="view-header">
-                        <h2>Single Plot Module</h2>
-                        <div class="header-actions">
-                            <div class="search-box">
-                                <i data-lucide="search"></i>
-                                <input type="text" id="singleplot-search" placeholder="Search Plots...">
-                            </div>
-                            <button class="btn btn-primary" id="btn-add-singleplot"><i data-lucide="plus"></i> Add
-                                Plot</button>
+                    <div class="view-header"
+                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2 style="font-size: 24px; font-weight: 700; color: #0f172a; margin: 0;">Single Plot Module</h2>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary" id="btn-add-singleplot"
+                                style="background-color: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+                                <i data-lucide="plus"></i> Add Plot
+                            </button>
                         </div>
                     </div>
-                    <div class="card" style="margin-top: 20px;">
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Plot No.</th>
-                                        <th>Layout Name</th>
-                                        <th>Area</th>
-                                        <th>Price</th>
-                                        <th>Status</th>
-                                        <th>Actions</th>
+
+                    <!-- Filter Bar -->
+                    <div
+                        style="background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <input type="text" id="singleplot-search" placeholder="Search Plots..."
+                            style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; flex: 1; min-width: 150px;">
+                    </div>
+
+                    <div
+                        style="background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; color: #475569;">
+                                    <th style="padding: 12px 16px;">Plot No.</th>
+                                    <th style="padding: 12px 16px;">Layout Name</th>
+                                    <th style="padding: 12px 16px;">Area</th>
+                                    <th style="padding: 12px 16px;">Price</th>
+                                    <th style="padding: 12px 16px;">Status</th>
+                                    <th style="padding: 12px 16px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="singleplot-tbody">
+                                <?php foreach ($singlePlotsList as $p): ?>
+                                    <tr style="border-bottom: 1px solid #f1f5f9;">
+                                        <td style="padding: 12px 16px;">
+                                            <div style="font-weight: 600; color: #0f172a;">
+                                                <?= htmlspecialchars($p['plot_number']) ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($p['layout_name']) ?></td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($p['area']) ?></td>
+                                        <td style="padding: 12px 16px;">₹<?= htmlspecialchars($p['price']) ?></td>
+                                        <td style="padding: 12px 16px;">
+                                            <?php
+                                            $status = strtolower($p['status']);
+                                            $color = '#64748b';
+                                            $bg = '#f1f5f9';
+                                            if ($status === 'available') {
+                                                $color = '#15803d';
+                                                $bg = '#dcfce7';
+                                            } else { // Sold, Reserved, or other
+                                                $color = '#b45309';
+                                                $bg = '#fef3c7';
+                                            }
+                                            ?>
+                                            <span
+                                                style="display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; color: <?= $color ?>; background: <?= $bg ?>;">
+                                                <?= htmlspecialchars($p['status']) ?>
+                                            </span>
+                                        </td>
+                                        <td style="padding: 12px 16px; display: flex; gap: 8px;">
+                                            <button class="btn-icon btn-edit-singleplot" data-id="<?= $p['id'] ?>"
+                                                data-json='<?= json_encode($p, JSON_HEX_APOS) ?>'
+                                                style="background:none; border:none; color:#3b82f6; cursor:pointer;"
+                                                title="Edit">
+                                                <i data-lucide="edit-3" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <button class="btn-icon btn-delete-singleplot" data-id="<?= $p['id'] ?>"
+                                                style="background:none; border:none; color:#ef4444; cursor:pointer;"
+                                                title="Delete">
+                                                <i data-lucide="trash-2" style="width:16px;height:16px;"></i>
+                                            </button>
+                                        </td>
                                     </tr>
-                                </thead>
-                                <tbody id="singleplot-tbody">
-                                    <?php foreach ($singlePlotsList as $p): ?>
-                                        <tr>
-                                            <td><?= htmlspecialchars($p['plot_number']) ?></td>
-                                            <td><?= htmlspecialchars($p['layout_name']) ?></td>
-                                            <td><?= htmlspecialchars($p['area']) ?></td>
-                                            <td>₹<?= htmlspecialchars($p['price']) ?></td>
-                                            <td><span
-                                                    class="badge badge-<?= strtolower($p['status']) === 'available' ? 'success' : 'warning' ?>"><?= htmlspecialchars($p['status']) ?></span>
-                                            </td>
-                                            <td>
-                                                <button class="btn-icon btn-edit-singleplot" data-id="<?= $p['id'] ?>"
-                                                    data-json='<?= json_encode($p, JSON_HEX_APOS) ?>'><i
-                                                        data-lucide="edit-2"></i></button>
-                                                <button class="btn-icon btn-delete-singleplot" data-id="<?= $p['id'] ?>"><i
-                                                        data-lucide="trash-2" style="color:#ef4444;"></i></button>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                    <?php if (empty($singlePlotsList)): ?>
-                                        <tr>
-                                            <td colspan="6" style="text-align:center;">No plots found.</td>
-                                        </tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
+                                <?php endforeach; ?>
+                                <?php if (empty($singlePlotsList)): ?>
+                                    <tr>
+                                        <td colspan="6" style="padding: 30px; text-align: center; color: #94a3b8;">No plots found.</td>
+                                    </tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -3502,62 +3576,96 @@ try {
          TAB: UAL MODULE
          ========================================================================== -->
                 <div id="view-ual" class="tab-view">
-                    <div class="view-header">
-                        <h2>UAL Module</h2>
-                        <div class="header-actions">
-                            <div class="search-box">
-                                <i data-lucide="search"></i>
-                                <input type="text" id="ual-search" placeholder="Search UAL...">
-                            </div>
-                            <button class="btn btn-primary" id="btn-add-ual"><i data-lucide="plus"></i> Add UAL
-                                Record</button>
+                    <div class="view-header"
+                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2 style="font-size: 24px; font-weight: 700; color: #0f172a; margin: 0;">UAL Module</h2>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary" id="btn-add-ual"
+                                style="background-color: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+                                <i data-lucide="plus"></i> Add UAL Record
+                            </button>
                         </div>
                     </div>
-                    <div class="card" style="margin-top: 20px;">
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Case No.</th>
-                                        <th>Owner Name</th>
-                                        <th>Total Land</th>
-                                        <th>Excess Land</th>
-                                        <th>Status</th>
-                                        <th>Actions</th>
+
+                    <!-- Filter Bar -->
+                    <div
+                        style="background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <input type="text" id="ual-search" placeholder="Search UAL..."
+                            style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; flex: 1; min-width: 150px;">
+                    </div>
+
+                    <div
+                        style="background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; color: #475569;">
+                                    <th style="padding: 12px 16px;">Case No.</th>
+                                    <th style="padding: 12px 16px;">Owner Name</th>
+                                    <th style="padding: 12px 16px;">Total Land</th>
+                                    <th style="padding: 12px 16px;">Excess Land</th>
+                                    <th style="padding: 12px 16px;">Status</th>
+                                    <th style="padding: 12px 16px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ual-tbody">
+                                <?php foreach ($ualRecordsList as $u): ?>
+                                    <tr style="border-bottom: 1px solid #f1f5f9;">
+                                        <td style="padding: 12px 16px;">
+                                            <div style="font-weight: 600; color: #0f172a;">
+                                                <?= htmlspecialchars($u['case_number']) ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($u['owner_name']) ?></td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($u['total_land_area']) ?></td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($u['excess_land_area']) ?></td>
+                                        <td style="padding: 12px 16px;">
+                                            <?php
+                                            $status = strtolower($u['approval_status']);
+                                            $color = '#64748b';
+                                            $bg = '#f1f5f9';
+                                            if ($status === 'approved') {
+                                                $color = '#15803d';
+                                                $bg = '#dcfce7';
+                                            } elseif ($status === 'rejected') {
+                                                $color = '#b91c1c';
+                                                $bg = '#fee2e2';
+                                            } else { // Pending or other
+                                                $color = '#b45309';
+                                                $bg = '#fef3c7';
+                                            }
+                                            ?>
+                                            <span
+                                                style="display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; color: <?= $color ?>; background: <?= $bg ?>;">
+                                                <?= htmlspecialchars($u['approval_status']) ?>
+                                            </span>
+                                        </td>
+                                        <td style="padding: 12px 16px; display: flex; gap: 8px;">
+                                            <button class="btn-icon btn-edit-ual" data-id="<?= $u['id'] ?>"
+                                                data-json='<?= json_encode($u, JSON_HEX_APOS) ?>'
+                                                style="background:none; border:none; color:#3b82f6; cursor:pointer;"
+                                                title="Edit">
+                                                <i data-lucide="edit-3" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <button class="btn-icon btn-delete-ual" data-id="<?= $u['id'] ?>"
+                                                style="background:none; border:none; color:#ef4444; cursor:pointer;"
+                                                title="Delete">
+                                                <i data-lucide="trash-2" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <?php if ($u['document_path']): ?>
+                                                <a href="<?= htmlspecialchars($u['document_path']) ?>" target="_blank"
+                                                    style="color:#06b6d4;" title="View Document">
+                                                    <i data-lucide="file-text" style="width:16px;height:16px;"></i>
+                                                </a>
+                                            <?php endif; ?>
+                                        </td>
                                     </tr>
-                                </thead>
-                                <tbody id="ual-tbody">
-                                    <?php foreach ($ualRecordsList as $u): ?>
-                                        <tr>
-                                            <td><?= htmlspecialchars($u['case_number']) ?></td>
-                                            <td><?= htmlspecialchars($u['owner_name']) ?></td>
-                                            <td><?= htmlspecialchars($u['total_land_area']) ?></td>
-                                            <td><?= htmlspecialchars($u['excess_land_area']) ?></td>
-                                            <td><span
-                                                    class="badge badge-<?= strtolower($u['approval_status']) === 'approved' ? 'success' : 'warning' ?>"><?= htmlspecialchars($u['approval_status']) ?></span>
-                                            </td>
-                                            <td>
-                                                <button class="btn-icon btn-edit-ual" data-id="<?= $u['id'] ?>"
-                                                    data-json='<?= json_encode($u, JSON_HEX_APOS) ?>'><i
-                                                        data-lucide="edit-2"></i></button>
-                                                <button class="btn-icon btn-delete-ual" data-id="<?= $u['id'] ?>"><i
-                                                        data-lucide="trash-2" style="color:#ef4444;"></i></button>
-                                                <?php if ($u['document_path']): ?>
-                                                    <a href="<?= htmlspecialchars($u['document_path']) ?>" target="_blank"
-                                                        class="btn-icon" title="View Document"><i
-                                                            data-lucide="file-text"></i></a>
-                                                <?php endif; ?>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                    <?php if (empty($ualRecordsList)): ?>
-                                        <tr>
-                                            <td colspan="6" style="text-align:center;">No UAL records found.</td>
-                                        </tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
+                                <?php endforeach; ?>
+                                <?php if (empty($ualRecordsList)): ?>
+                                    <tr>
+                                        <td colspan="6" style="padding: 30px; text-align: center; color: #94a3b8;">No UAL records found.</td>
+                                    </tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -3609,60 +3717,76 @@ try {
          TAB: LAND SURVEY MODULE
          ========================================================================== -->
                 <div id="view-landsurvey" class="tab-view">
-                    <div class="view-header">
-                        <h2>Land Survey Module</h2>
-                        <div class="header-actions">
-                            <div class="search-box">
-                                <i data-lucide="search"></i>
-                                <input type="text" id="landsurvey-search" placeholder="Search Surveys...">
-                            </div>
-                            <button class="btn btn-primary" id="btn-add-landsurvey"><i data-lucide="plus"></i> Add
-                                Survey</button>
+                    <div class="view-header"
+                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2 style="font-size: 24px; font-weight: 700; color: #0f172a; margin: 0;">Land Survey Module</h2>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary" id="btn-add-landsurvey"
+                                style="background-color: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+                                <i data-lucide="plus"></i> Add Survey
+                            </button>
                         </div>
                     </div>
-                    <div class="card" style="margin-top: 20px;">
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>Survey No.</th>
-                                        <th>Village</th>
-                                        <th>Owner Name</th>
-                                        <th>Total Area</th>
-                                        <th>Land Type</th>
-                                        <th>Actions</th>
+
+                    <!-- Filter Bar -->
+                    <div
+                        style="background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <input type="text" id="landsurvey-search" placeholder="Search Surveys..."
+                            style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; flex: 1; min-width: 150px;">
+                    </div>
+
+                    <div
+                        style="background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; color: #475569;">
+                                    <th style="padding: 12px 16px;">Survey No.</th>
+                                    <th style="padding: 12px 16px;">Village</th>
+                                    <th style="padding: 12px 16px;">Owner Name</th>
+                                    <th style="padding: 12px 16px;">Total Area</th>
+                                    <th style="padding: 12px 16px;">Land Type</th>
+                                    <th style="padding: 12px 16px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="landsurvey-tbody">
+                                <?php foreach ($landSurveysList as $s): ?>
+                                    <tr style="border-bottom: 1px solid #f1f5f9;">
+                                        <td style="padding: 12px 16px;">
+                                            <div style="font-weight: 600; color: #0f172a;">
+                                                <?= htmlspecialchars($s['survey_number']) ?></div>
+                                        </td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($s['village_name']) ?></td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($s['owner_name']) ?></td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($s['total_area']) ?></td>
+                                        <td style="padding: 12px 16px;"><?= htmlspecialchars($s['land_type']) ?></td>
+                                        <td style="padding: 12px 16px; display: flex; gap: 8px;">
+                                            <button class="btn-icon btn-edit-landsurvey" data-id="<?= $s['id'] ?>"
+                                                data-json='<?= json_encode($s, JSON_HEX_APOS) ?>'
+                                                style="background:none; border:none; color:#3b82f6; cursor:pointer;"
+                                                title="Edit">
+                                                <i data-lucide="edit-3" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <button class="btn-icon btn-delete-landsurvey" data-id="<?= $s['id'] ?>"
+                                                style="background:none; border:none; color:#ef4444; cursor:pointer;"
+                                                title="Delete">
+                                                <i data-lucide="trash-2" style="width:16px;height:16px;"></i>
+                                            </button>
+                                            <?php if ($s['document_path']): ?>
+                                                <a href="<?= htmlspecialchars($s['document_path']) ?>" target="_blank"
+                                                    style="color:#06b6d4;" title="View Document">
+                                                    <i data-lucide="file-text" style="width:16px;height:16px;"></i>
+                                                </a>
+                                            <?php endif; ?>
+                                        </td>
                                     </tr>
-                                </thead>
-                                <tbody id="landsurvey-tbody">
-                                    <?php foreach ($landSurveysList as $s): ?>
-                                        <tr>
-                                            <td><?= htmlspecialchars($s['survey_number']) ?></td>
-                                            <td><?= htmlspecialchars($s['village_name']) ?></td>
-                                            <td><?= htmlspecialchars($s['owner_name']) ?></td>
-                                            <td><?= htmlspecialchars($s['total_area']) ?></td>
-                                            <td><?= htmlspecialchars($s['land_type']) ?></td>
-                                            <td>
-                                                <button class="btn-icon btn-edit-landsurvey" data-id="<?= $s['id'] ?>"
-                                                    data-json='<?= json_encode($s, JSON_HEX_APOS) ?>'><i
-                                                        data-lucide="edit-2"></i></button>
-                                                <button class="btn-icon btn-delete-landsurvey" data-id="<?= $s['id'] ?>"><i
-                                                        data-lucide="trash-2" style="color:#ef4444;"></i></button>
-                                                <?php if ($s['document_path']): ?>
-                                                    <a href="<?= htmlspecialchars($s['document_path']) ?>" target="_blank"
-                                                        class="btn-icon" title="View Document"><i
-                                                            data-lucide="file-text"></i></a>
-                                                <?php endif; ?>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                    <?php if (empty($landSurveysList)): ?>
-                                        <tr>
-                                            <td colspan="6" style="text-align:center;">No land surveys found.</td>
-                                        </tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
+                                <?php endforeach; ?>
+                                <?php if (empty($landSurveysList)): ?>
+                                    <tr>
+                                        <td colspan="6" style="padding: 30px; text-align: center; color: #94a3b8;">No land surveys found.</td>
+                                    </tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 

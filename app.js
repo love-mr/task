@@ -508,12 +508,27 @@ function setupFormActions() {
             const formData = new FormData(chatForm);
             formData.append('discussion_id', discId);
 
-            // Simple plain-text send (no E2EE complexity)
             const msgInput = chatForm.querySelector('[name="message"]');
             const rawMsg = msgInput ? msgInput.value.trim() : '';
-            if (!rawMsg && !formData.get('attachment')) {
+            const hasAttachment = chatForm.querySelector('[name="attachment"]')?.files?.length > 0;
+            
+            if (!rawMsg && !hasAttachment) {
                 return; // nothing to send
             }
+
+            // E2EE: Encrypt message if AES key is available, otherwise send plain text
+            if (window.currentAESKey && rawMsg) {
+                try {
+                    const encryptedMsg = await encryptMessageAES(rawMsg, window.currentAESKey);
+                    formData.set('message', encryptedMsg);
+                } catch(encErr) {
+                    console.warn("E2EE encryption failed, sending as plain text:", encErr);
+                    // Plain text will be sent from the original formData
+                }
+            }
+
+            const sendBtn = chatForm.querySelector('[type="submit"]');
+            if (sendBtn) sendBtn.disabled = true;
 
             fetch('api.php?action=send_message', {
                 method: 'POST',
@@ -522,7 +537,11 @@ function setupFormActions() {
             .then(r => r.json())
             .then(res => {
                 if (res.success) {
-                    chatForm.reset();
+                    if (msgInput) msgInput.value = '';
+                    const fileInput = chatForm.querySelector('[name="attachment"]');
+                    if (fileInput) fileInput.value = '';
+                    const attachBtn = document.getElementById('btn-chat-attach');
+                    if (attachBtn) attachBtn.style.color = 'var(--text-muted)';
                     loadThreadMessages(discId);
                 } else {
                     alert('Failed to send: ' + (res.message || 'Server error'));
@@ -531,6 +550,9 @@ function setupFormActions() {
             .catch(err => {
                 console.error('Send message error:', err);
                 alert('Network error. Please try again.');
+            })
+            .finally(() => {
+                if (sendBtn) sendBtn.disabled = false;
             });
         });
     }
@@ -1834,16 +1856,35 @@ function filterDirectChatUsers() {
     renderDirectChatUsers(filtered);
 }
 
-function startDirectChatWithUser(userId) {
-    const formData = new FormData();
-    formData.append('user_id', userId);
-
-    fetch('api.php?action=start_direct_conversation', {
-        method: 'POST',
-        body: formData
-    })
-    .then(r => r.json())
-    .then(res => {
+async function startDirectChatWithUser(userId) {
+    try {
+        const aesKeyObj = await generateAESKey();
+        const aesKeyBase64 = await exportAESKey(aesKeyObj);
+        
+        // Fetch target's public key
+        const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${userId}`).then(r=>r.json());
+        const targetPubKey = pkRes.public_key;
+        
+        // Encrypt AES key for self
+        const selfPubKey = localStorage.getItem('e2ee_public_key');
+        const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
+        
+        // Encrypt AES key for target
+        let encTarget = '';
+        if (targetPubKey) {
+            encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
+        } else {
+            alert("User has not set up encryption keys. Cannot create secure chat.");
+            return;
+        }
+        
+        const formData = new FormData();
+        formData.append('target_employee_id', userId);
+        formData.append('encrypted_key_self', encSelf);
+        formData.append('encrypted_key_target', encTarget);
+        
+        const res = await fetch('api.php?action=create_direct_message', { method: 'POST', body: formData }).then(r=>r.json());
+        
         if (res.success) {
             document.getElementById('modal-start-direct-chat').classList.remove('active');
             sessionStorage.setItem('active_discussion_id_after_reload', res.discussion_id);
@@ -1851,11 +1892,10 @@ function startDirectChatWithUser(userId) {
         } else {
             alert('Error: ' + res.message);
         }
-    })
-    .catch(err => {
-        console.error(err);
+    } catch(err) {
+        console.error("DM creation failed:", err);
         alert('Failed to start conversation.');
-    });
+    }
 }
 
 // ==========================================================================
@@ -2382,15 +2422,18 @@ async function renderChatMessages(messages, container) {
         let displayMsg = m.message || '';
         if (window.currentAESKey && displayMsg.startsWith('{')) {
             // Has AES key - try to decrypt AES payload
-            displayMsg = await decryptMessageAES(displayMsg, window.currentAESKey);
+            const decrypted = await decryptMessageAES(displayMsg, window.currentAESKey);
+            // If decryption returned an error indicator, still show original safely
+            displayMsg = (decrypted && !decrypted.startsWith('[')) ? decrypted : decrypted;
         } else if (!window.currentAESKey && displayMsg.startsWith('{')) {
-            // No key, but JSON payload - try to extract as legacy or show indicator
+            // No key, but JSON payload - try to parse as legacy or show encrypted indicator
             try {
                 const parsed = JSON.parse(displayMsg);
                 if (parsed && typeof parsed === 'object' && parsed[meId]) {
                     displayMsg = await decryptMessage(parsed[meId]);
                 } else if (parsed && parsed.ciphertext) {
-                    displayMsg = '[Encrypted Message - Key Required]';
+                    // Encrypted AES message but no key - show safe indicator
+                    displayMsg = '🔒 Encrypted message';
                 }
             } catch(e) {
                 // Not valid JSON, just show as-is
