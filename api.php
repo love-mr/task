@@ -14,6 +14,23 @@ if (!$jwtPayload) {
     exit;
 }
 
+// Dynamically fetch current user info from DB to avoid stale JWT data
+try {
+    $stmtUser = $pdo->prepare("SELECT org_id, role, name, status FROM `employees` WHERE id = ?");
+    $stmtUser->execute([$jwtPayload['id']]);
+    $dbUser = $stmtUser->fetch(PDO::FETCH_ASSOC);
+    if ($dbUser) {
+        $jwtPayload['org_id'] = (int)$dbUser['org_id'];
+        $jwtPayload['role'] = $dbUser['role'];
+        $jwtPayload['name'] = $dbUser['name'];
+        if ($dbUser['status'] === 'Deactivated' || $dbUser['status'] === 'Pending') {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Your account is deactivated or pending approval.']);
+            exit;
+        }
+    }
+} catch (PDOException $ex) {}
+
 // Validate organization status for API requests
 $meOrgId = (int)($jwtPayload['org_id'] ?? 0);
 if ($meOrgId > 0 && isset($jwtPayload['role']) && $jwtPayload['role'] !== 'Super Admin') {
@@ -335,6 +352,24 @@ try {
                 'success' => true,
                 'message' => 'Employee created successfully'
             ];
+        } else if ($action === 'update_own_organization') {
+            $meRole = $jwtPayload['role'] ?? '';
+            $meOrgId = (int)($jwtPayload['org_id'] ?? 0);
+            if ($meRole !== 'Project Lead') {
+                throw new Exception("Only organization administrators can update organization details.");
+            }
+            $phone = trim($_POST['phone'] ?? '');
+            $address = trim($_POST['address'] ?? '');
+            $details = trim($_POST['details'] ?? '');
+
+            if (empty($phone) || empty($address)) {
+                throw new Exception("Phone and Address are required.");
+            }
+
+            $stmt = $pdo->prepare("UPDATE `organizations` SET `phone` = ?, `address` = ?, `details` = ? WHERE `id` = ?");
+            $stmt->execute([$phone, $address, $details, $meOrgId]);
+
+            $response = ['success' => true, 'message' => 'Organization updated successfully'];
         } else if ($action === 'update_settings') {
             $name = trim($_POST['name'] ?? '');
             $role = trim($_POST['role'] ?? '');
@@ -348,6 +383,59 @@ try {
             }
 
             $meId = $jwtPayload['id'];
+
+            // Fetch existing avatar
+            $stmtMe = $pdo->prepare("SELECT avatar FROM employees WHERE id = ?");
+            $stmtMe->execute([$meId]);
+            $existingAvatar = $stmtMe->fetchColumn();
+
+            $removePhoto = isset($_POST['remove_photo']) && $_POST['remove_photo'] == '1';
+
+            if ($removePhoto) {
+                if ($existingAvatar && (strpos($existingAvatar, '.') !== false || strpos($existingAvatar, 'uploads/') !== false)) {
+                    if (file_exists($existingAvatar)) {
+                        @unlink($existingAvatar);
+                    }
+                }
+                // $avatar remains the submitted initials
+            } else {
+                // Handle optional profile photo upload
+                if (isset($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+                    $file = $_FILES['photo'];
+                    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+                    $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+                    if (!in_array($ext, $allowedExtensions)) {
+                        throw new Exception("Only image files (JPG, PNG, GIF, WEBP) are allowed for profile photo.");
+                    }
+                    $finfo = new finfo(FILEINFO_MIME_TYPE);
+                    $detectedMime = $finfo->file($file['tmp_name']);
+                    if (strpos($detectedMime, 'image/') !== 0) {
+                        throw new Exception("Uploaded file is not a valid image.");
+                    }
+                    $uploadsDir = 'uploads/';
+                    if (!is_dir($uploadsDir)) {
+                        mkdir($uploadsDir, 0755, true);
+                    }
+                    $secureFileName = 'avatar_' . $meId . '_' . time() . '.' . $ext;
+                    $targetPath = $uploadsDir . $secureFileName;
+                    if (move_uploaded_file($file['tmp_name'], $targetPath)) {
+                        // Delete previous profile photo file if it was an upload
+                        if ($existingAvatar && (strpos($existingAvatar, '.') !== false || strpos($existingAvatar, 'uploads/') !== false)) {
+                            if (file_exists($existingAvatar)) {
+                                @unlink($existingAvatar);
+                            }
+                        }
+                        $avatar = $targetPath;
+                    } else {
+                        throw new Exception("Failed to save profile photo.");
+                    }
+                } else {
+                    // No new photo uploaded. If the existing avatar was a file, preserve it.
+                    if ($existingAvatar && (strpos($existingAvatar, '.') !== false || strpos($existingAvatar, 'uploads/') !== false)) {
+                        $avatar = $existingAvatar;
+                    }
+                }
+            }
 
             // Check if email already exists for another employee
             $checkEmail = $pdo->prepare("SELECT COUNT(*) FROM `employees` WHERE `email` = ? AND id != ?");
@@ -685,6 +773,9 @@ try {
         } else if ($action === 'start_call') {
             $discId = (int) ($_POST['discussion_id'] ?? 0);
             $type = trim($_POST['type'] ?? 'video');
+            if ($type === 'audio') {
+                $type = 'voice';
+            }
             $meId = $jwtPayload['id'];
             
             if (!$discId) throw new Exception("Discussion ID required.");
@@ -712,6 +803,9 @@ try {
             ");
             $stmt->execute([$meId, $meId]);
             $call = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($call && $call['type'] === 'voice') {
+                $call['type'] = 'audio';
+            }
             $response = ['success' => true, 'call' => $call];
         } else if ($action === 'delete_discussion') {
             $discId = (int)($_POST['discussion_id'] ?? 0);
@@ -1339,8 +1433,8 @@ try {
                 $otherName = $stmtUser->fetchColumn() ?: "Direct Chat";
 
                 // Create new direct discussion
-                $stmtNew = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`) VALUES (?, 'Direct', ?)");
-                $stmtNew->execute([$otherName, date('d M Y')]);
+                $stmtNew = $pdo->prepare("INSERT INTO `discussions` (`title`, `type`, `date_logged`, `org_id`, `is_direct`) VALUES (?, 'Direct', ?, ?, 1)");
+                $stmtNew->execute([$otherName, date('d M Y'), (int)($jwtPayload['org_id'] ?? 1)]);
                 $discId = $pdo->lastInsertId();
 
                 // Add members

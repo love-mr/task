@@ -54,13 +54,13 @@ function setupSPARouting() {
         let cleanHash = targetHash.replace('#', '');
         
         // Determine default tab based on user role
-        const defaultTab = (window.VYALA_USER_ROLE === 'Admin') ? 'organizations' : 'dashboard';
+        const defaultTab = (window.VYALA_USER_ROLE === 'Admin' || window.VYALA_USER_ROLE === 'Super Admin') ? 'organizations' : 'dashboard';
         if (!cleanHash) {
             cleanHash = defaultTab;
         }
 
-        // Force Admin to only access the 'organizations' tab
-        if (window.VYALA_USER_ROLE === 'Admin' && cleanHash !== 'organizations') {
+        // Force Admin/Super Admin tab restrictions
+        if ((window.VYALA_USER_ROLE === 'Super Admin' || window.VYALA_USER_ROLE === 'Admin') && cleanHash !== 'organizations') {
             window.location.hash = '#organizations';
             return;
         }
@@ -119,7 +119,7 @@ function setupSPARouting() {
     });
 
     // Check initial hash
-    if (window.VYALA_USER_ROLE === 'Admin') {
+    if (window.VYALA_USER_ROLE === 'Admin' || window.VYALA_USER_ROLE === 'Super Admin') {
         if (window.location.hash !== '#organizations') {
             window.location.hash = '#organizations';
         } else {
@@ -448,19 +448,26 @@ function setupFormActions() {
                 
                 // --- E2EE Intercept for New Discussion ---
                 if (formId === 'form-new-discussion') {
-                    // Generate a shared AES key and encrypt it for self
-                    generateAESKey().then(aesKeyObj => {
-                        exportAESKey(aesKeyObj).then(aesKeyBase64 => {
-                            const selfPubKey = localStorage.getItem('e2ee_public_key');
-                            encryptAESKeyWithRSA(aesKeyBase64, selfPubKey).then(encSelf => {
-                                formData.append('encrypted_key_self', encSelf);
-                                submitFormAjax(actionUrl, formData, form);
+                    const selfPubKey = localStorage.getItem('e2ee_public_key');
+                    if (selfPubKey) {
+                        // Generate a shared AES key and encrypt it for self
+                        generateAESKey().then(aesKeyObj => {
+                            exportAESKey(aesKeyObj).then(aesKeyBase64 => {
+                                encryptAESKeyWithRSA(aesKeyBase64, selfPubKey).then(encSelf => {
+                                    formData.append('encrypted_key_self', encSelf);
+                                    submitFormAjax(actionUrl, formData, form);
+                                }).catch(err => {
+                                    console.error("Failed to encrypt group key:", err);
+                                    submitFormAjax(actionUrl, formData, form);
+                                });
                             });
+                        }).catch(err => {
+                            console.error("Failed to generate group AES key:", err);
+                            submitFormAjax(actionUrl, formData, form);
                         });
-                    }).catch(err => {
-                        console.error("Failed to generate group AES key:", err);
-                        alert("Failed to setup secure chat. Please check console.");
-                    });
+                    } else {
+                        submitFormAjax(actionUrl, formData, form);
+                    }
                 } else {
                     submitFormAjax(actionUrl, formData, form);
                 }
@@ -509,11 +516,20 @@ function setupFormActions() {
             const formData = new FormData(chatForm);
             formData.append('discussion_id', discId);
 
-            // Simple plain-text send (no E2EE complexity)
             const msgInput = chatForm.querySelector('[name="message"]');
-            const rawMsg = msgInput ? msgInput.value.trim() : '';
+            let rawMsg = msgInput ? msgInput.value.trim() : '';
             if (!rawMsg && !formData.get('attachment')) {
                 return; // nothing to send
+            }
+
+            // E2EE Message Encryption if active session key exists
+            if (window.currentAESKey && rawMsg) {
+                try {
+                    const encryptedMsg = await encryptMessageAES(rawMsg, window.currentAESKey);
+                    formData.set('message', encryptedMsg);
+                } catch(encErr) {
+                    console.warn("Failed to encrypt message with E2EE, sending as plain text fallback:", encErr);
+                }
             }
 
             fetch('api.php?action=send_message', {
@@ -1048,11 +1064,26 @@ function setupSubTabAndAccordionBindings() {
                 const title = item.getAttribute('data-chat-title') || '';
                 const avatar = item.getAttribute('data-chat-avatar') || '';
                 const color = item.getAttribute('data-chat-color') || '';
+                const chatType = item.getAttribute('data-chat-type') || '';
+                const chatMembers = item.getAttribute('data-chat-members') || '1';
                 
                 if (activeTitle) activeTitle.textContent = title;
                 if (activeAvatar) {
                     activeAvatar.textContent = avatar;
                     activeAvatar.className = 'chat-thread-avatar ' + color;
+                }
+                
+                const membersEl = document.querySelector('.chat-window-members');
+                const memBtn = document.getElementById('chat-header-members');
+                if (membersEl) {
+                    if (chatType === 'Direct') {
+                        membersEl.textContent = 'Direct Chat';
+                        if (memBtn) memBtn.style.display = 'none';
+                    } else {
+                        const membersCount = parseInt(chatMembers, 10);
+                        membersEl.textContent = `${membersCount} Members active in channel`;
+                        if (memBtn) memBtn.style.display = 'flex';
+                    }
                 }
                 
                 // Show chat window header and footer
@@ -1100,11 +1131,37 @@ function setupSubTabAndAccordionBindings() {
         const initialDisc = document.querySelector('.chat-thread-item.active');
         if (initialDisc) {
             const initialId = initialDisc.getAttribute('data-chat-id');
+            const title = initialDisc.getAttribute('data-chat-title') || '';
+            const avatar = initialDisc.getAttribute('data-chat-avatar') || '';
+            const color = initialDisc.getAttribute('data-chat-color') || '';
+            const chatType = initialDisc.getAttribute('data-chat-type') || '';
+            const chatMembers = initialDisc.getAttribute('data-chat-members') || '1';
+            
+            if (activeTitle) activeTitle.textContent = title;
+            if (activeAvatar) {
+                activeAvatar.textContent = avatar;
+                activeAvatar.className = 'chat-thread-avatar ' + color;
+            }
+            
+            const membersEl = document.querySelector('.chat-window-members');
+            const memBtn = document.getElementById('chat-header-members');
+            if (membersEl) {
+                if (chatType === 'Direct') {
+                    membersEl.textContent = 'Direct Chat';
+                    if (memBtn) memBtn.style.display = 'none';
+                } else {
+                    const membersCount = parseInt(chatMembers, 10);
+                    membersEl.textContent = `${membersCount} Members active in channel`;
+                    if (memBtn) memBtn.style.display = 'flex';
+                }
+            }
+            
             const header = document.querySelector('.chat-window-header');
             const footer = document.querySelector('.chat-window-footer');
             if (header) header.style.display = 'flex';
             if (footer) footer.style.display = 'block';
             loadThreadMessages(initialId);
+            startMessagePolling(initialId);
         }
     }
 
@@ -1529,8 +1586,6 @@ function loadDiscussionMembers(discussionId) {
                     const actionBtnsHtml = isMe ? '' : `
                         <div style="display:flex; gap:8px; align-items:center;">
                             <i data-lucide="message-square" class="member-action-msg" data-emp-id="${m.id}" data-emp-name="${escapeHtml(m.name)}" style="width:14px; height:14px; cursor:pointer; color:#3b82f6;" title="Direct Message"></i>
-                            <i data-lucide="phone" class="member-action-audio" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#10b981;" title="Audio Call"></i>
-                            <i data-lucide="video" class="member-action-video" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#8b5cf6;" title="Video Call"></i>
                             ${removeBtnHtml}
                         </div>
                     `;
@@ -1558,8 +1613,6 @@ function loadDiscussionMembers(discussionId) {
                     const actionBtnsHtml = `
                         <div style="display:flex; gap:8px; align-items:center;">
                             <i data-lucide="message-square" class="member-action-msg" data-emp-id="${m.id}" data-emp-name="${escapeHtml(m.name)}" style="width:14px; height:14px; cursor:pointer; color:#3b82f6;" title="Direct Message"></i>
-                            <i data-lucide="phone" class="member-action-audio" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#10b981;" title="Audio Call"></i>
-                            <i data-lucide="video" class="member-action-video" data-emp-id="${m.id}" style="width:14px; height:14px; cursor:pointer; color:#8b5cf6;" title="Video Call"></i>
                             ${addBtnHtml}
                         </div>
                     `;
@@ -1653,66 +1706,52 @@ function bindDiscussionMembersActions(discussionId) {
     document.querySelectorAll('.member-action-msg').forEach(btn => {
         btn.addEventListener('click', async function() {
             const empId = btn.getAttribute('data-emp-id');
-            const empName = btn.getAttribute('data-emp-name');
-            
-            // Generate a shared AES key for the DM
-            try {
-                const aesKeyObj = await generateAESKey();
-                const aesKeyBase64 = await exportAESKey(aesKeyObj);
-                
-                // Fetch target's public key
-                const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${empId}`).then(r=>r.json());
-                const targetPubKey = pkRes.public_key;
-                
-                // Encrypt AES key for self
-                const selfPubKey = localStorage.getItem('e2ee_public_key');
-                const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
-                
-                // Encrypt AES key for target
-                let encTarget = '';
-                if (targetPubKey) {
-                    encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
-                } else {
-                    // Fallback or warning if target has no key yet
-                    alert("User has not set up encryption keys. Cannot create secure chat.");
-                    return;
-                }
-                
-                const formData = new FormData();
-                formData.append('target_employee_id', empId);
-                formData.append('encrypted_key_self', encSelf);
-                formData.append('encrypted_key_target', encTarget);
-                
-                const res = await fetch('api.php?action=create_direct_message', { method: 'POST', body: formData }).then(r=>r.json());
-                
-                if (res.success) {
-                    alert('Direct message thread created/opened!');
-                    window.location.reload();
-                } else {
-                    alert('Error: ' + res.message);
-                }
-            } catch(err) {
-                console.error("DM creation failed:", err);
+            const modal = document.getElementById('modal-discussion-members');
+            if (modal) {
+                modal.classList.remove('active');
             }
+            startDirectChatWithUser(empId);
         });
     });
 
     const meId = window.VYALA_TASKPAD_DASHBOARD_DATA?.meId;
-    document.querySelectorAll('.member-action-audio').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const empId = btn.getAttribute('data-emp-id');
-            const roomId = "direct_" + Math.min(meId, empId) + "_" + Math.max(meId, empId);
-            window.open(`video_call.php?discussion_id=${roomId}&type=audio`, '_blank', 'width=800,height=600');
-        });
-    });
+    
+    // Helper to get or create DM channel supporting E2EE
+    async function getOrCreateDirectChatId(empId) {
+        try {
+            const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${empId}`).then(r => r.json());
+            const targetPubKey = pkRes.public_key;
+            if (targetPubKey) {
+                const aesKeyObj = await generateAESKey();
+                const aesKeyBase64 = await exportAESKey(aesKeyObj);
+                const selfPubKey = localStorage.getItem('e2ee_public_key');
+                if (selfPubKey) {
+                    const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
+                    const encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
+                    const formData = new FormData();
+                    formData.append('target_employee_id', empId);
+                    formData.append('encrypted_key_self', encSelf);
+                    formData.append('encrypted_key_target', encTarget);
+                    const res = await fetch('api.php?action=create_direct_message', { method: 'POST', body: formData }).then(r => r.json());
+                    if (res.success) {
+                        return res.discussion_id;
+                    }
+                }
+            }
+            // Standard direct chat fallback
+            const formData = new FormData();
+            formData.append('user_id', empId);
+            const res = await fetch('api.php?action=start_direct_conversation', { method: 'POST', body: formData }).then(r => r.json());
+            if (res.success) {
+                return res.discussion_id;
+            }
+            return null;
+        } catch(err) {
+            console.error("Failed to get or create DM channel:", err);
+            return null;
+        }
+    }
 
-    document.querySelectorAll('.member-action-video').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const empId = btn.getAttribute('data-emp-id');
-            const roomId = "direct_" + Math.min(meId, empId) + "_" + Math.max(meId, empId);
-            window.open(`video_call.php?discussion_id=${roomId}&type=video`, '_blank', 'width=800,height=600');
-        });
-    });
 }
 
 // ==========================================================================
@@ -1721,9 +1760,9 @@ function bindDiscussionMembersActions(discussionId) {
 let allActiveUsersForDirectChat = [];
 
 function setupDirectChatManager() {
-    const btnNewGroup = document.getElementById('btn-new-group');
-    if (btnNewGroup) {
-        btnNewGroup.addEventListener('click', function() {
+    const btnNewDirectMessage = document.getElementById('btn-new-direct-message');
+    if (btnNewDirectMessage) {
+        btnNewDirectMessage.addEventListener('click', function() {
             loadActiveUsersForDirectChat();
         });
     }
@@ -1835,28 +1874,67 @@ function filterDirectChatUsers() {
     renderDirectChatUsers(filtered);
 }
 
-function startDirectChatWithUser(userId) {
-    const formData = new FormData();
-    formData.append('user_id', userId);
+async function startDirectChatWithUser(userId) {
+    try {
+        // Fetch target's public key first to see if E2EE is possible
+        const pkRes = await fetch(`api.php?action=get_employee_public_key&employee_id=${userId}`).then(r => r.json());
+        const targetPubKey = pkRes.public_key;
 
-    fetch('api.php?action=start_direct_conversation', {
-        method: 'POST',
-        body: formData
-    })
-    .then(r => r.json())
-    .then(res => {
-        if (res.success) {
-            document.getElementById('modal-start-direct-chat').classList.remove('active');
-            sessionStorage.setItem('active_discussion_id_after_reload', res.discussion_id);
-            window.location.reload();
-        } else {
-            alert('Error: ' + res.message);
+        if (targetPubKey) {
+            // Generate a shared AES key for E2EE
+            const aesKeyObj = await generateAESKey();
+            const aesKeyBase64 = await exportAESKey(aesKeyObj);
+
+            // Encrypt AES key for self
+            const selfPubKey = localStorage.getItem('e2ee_public_key');
+            if (selfPubKey) {
+                const encSelf = await encryptAESKeyWithRSA(aesKeyBase64, selfPubKey);
+                const encTarget = await encryptAESKeyWithRSA(aesKeyBase64, targetPubKey);
+
+                const formData = new FormData();
+                formData.append('target_employee_id', userId);
+                formData.append('encrypted_key_self', encSelf);
+                formData.append('encrypted_key_target', encTarget);
+
+                const res = await fetch('api.php?action=create_direct_message', {
+                    method: 'POST',
+                    body: formData
+                }).then(r => r.json());
+
+                if (res.success) {
+                    document.getElementById('modal-start-direct-chat').classList.remove('active');
+                    sessionStorage.setItem('active_discussion_id_after_reload', res.discussion_id);
+                    window.location.reload();
+                    return;
+                } else {
+                    alert('Error creating secure chat: ' + res.message);
+                }
+            }
         }
-    })
-    .catch(err => {
-        console.error(err);
-        alert('Failed to start conversation.');
-    });
+
+        // Fallback or User choice if E2EE is not supported by target
+        const confirmPlain = confirm("The recipient has not generated E2EE keys yet. Would you like to start a standard, non-encrypted conversation?");
+        if (confirmPlain) {
+            const formData = new FormData();
+            formData.append('user_id', userId);
+
+            const res = await fetch('api.php?action=start_direct_conversation', {
+                method: 'POST',
+                body: formData
+            }).then(r => r.json());
+
+            if (res.success) {
+                document.getElementById('modal-start-direct-chat').classList.remove('active');
+                sessionStorage.setItem('active_discussion_id_after_reload', res.discussion_id);
+                window.location.reload();
+            } else {
+                alert('Error: ' + res.message);
+            }
+        }
+    } catch (err) {
+        console.error("Failed to start direct chat:", err);
+        alert('Failed to start conversation. Please try again.');
+    }
 }
 
 // ==========================================================================
@@ -4063,6 +4141,42 @@ function setupDashboardTriggers() {
             const target = trigger.getAttribute('data-target');
             const statusFilter = trigger.getAttribute('data-filter-status');
             
+            if (target === 'projects') {
+                const isOrgAdmin = (window.VYALA_USER_ROLE === 'Project Lead');
+                if (isOrgAdmin) {
+                    // Organization admin: Switch sub-tab to "All Projects"
+                    const allProjectsTab = Array.from(document.querySelectorAll('.proj-tab-btn'))
+                        .find(el => el.textContent.trim() === 'All Projects');
+                    if (allProjectsTab) {
+                        document.querySelectorAll('.proj-tab-btn').forEach(t => {
+                            t.classList.remove('active');
+                            t.style.color = '#64748b';
+                            t.style.borderBottom = 'none';
+                        });
+                        allProjectsTab.classList.add('active');
+                        allProjectsTab.style.color = '#2563eb';
+                        allProjectsTab.style.borderBottom = '2px solid #2563eb';
+                    }
+                } else {
+                    // Standard employee: Switch sub-tab to "Created By Me" if current tab is invalid
+                    const activeTab = document.querySelector('.proj-tab-btn.active');
+                    if (!activeTab || activeTab.textContent.trim() === 'All Projects') {
+                        const createdByMeTab = Array.from(document.querySelectorAll('.proj-tab-btn'))
+                            .find(el => el.textContent.trim() === 'Created By Me');
+                        if (createdByMeTab) {
+                            document.querySelectorAll('.proj-tab-btn').forEach(t => {
+                                t.classList.remove('active');
+                                t.style.color = '#64748b';
+                                t.style.borderBottom = 'none';
+                            });
+                            createdByMeTab.classList.add('active');
+                            createdByMeTab.style.color = '#2563eb';
+                            createdByMeTab.style.borderBottom = '2px solid #2563eb';
+                        }
+                    }
+                }
+            }
+
             if (statusFilter && typeof currentProjectsFilterStatus !== 'undefined') {
                 currentProjectsFilterStatus = statusFilter;
                 const statusBtn = document.getElementById('projects-status-filter-toggle');

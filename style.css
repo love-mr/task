@@ -2623,23 +2623,31 @@ body {
 .chat-window-details {
     display: flex;
     flex-direction: column;
+    min-width: 0;
 }
 
 .chat-window-title {
     font-size: 14px;
     font-weight: 700;
     color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .chat-window-members {
     font-size: 11px;
     color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .chat-window-actions {
     display: flex;
     gap: 12px;
     color: var(--text-muted);
+    flex-shrink: 0;
 }
 
 .chat-window-messages {

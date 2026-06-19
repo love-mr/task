@@ -125,7 +125,21 @@ CREATE TABLE `discussions` (
   `attachment_type` VARCHAR(50) DEFAULT NULL,
   `date_logged` VARCHAR(100) DEFAULT NULL,
   `org_id` INT NOT NULL DEFAULT 1,
+  `is_direct` TINYINT(1) NOT NULL DEFAULT 0,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- Table structure for table `discussion_keys`
+DROP TABLE IF EXISTS `discussion_keys`;
+CREATE TABLE `discussion_keys` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `discussion_id` INT NOT NULL,
+  `employee_id` INT NOT NULL,
+  `encrypted_key` TEXT NOT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `uniq_disc_emp_key` (`discussion_id`, `employee_id`),
+  INDEX (`discussion_id`),
+  INDEX (`employee_id`)
 ) ENGINE=InnoDB;
 
 -- Table structure for table `discussion_members`

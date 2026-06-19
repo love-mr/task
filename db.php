@@ -156,6 +156,7 @@ try {
         `attachment_name` VARCHAR(255) DEFAULT NULL,
         `attachment_type` VARCHAR(50) DEFAULT NULL, -- pdf, dwg, doc, image, etc.
         `date_logged` VARCHAR(100) DEFAULT NULL,
+        `is_direct` TINYINT(1) NOT NULL DEFAULT 0,
         `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB;");
 
@@ -248,6 +249,31 @@ try {
         INDEX (`employee_id`)
     ) ENGINE=InnoDB;");
 
+    // Create discussion_keys table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `discussion_keys` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `discussion_id` INT NOT NULL,
+        `employee_id` INT NOT NULL,
+        `encrypted_key` TEXT NOT NULL,
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY `uniq_disc_emp_key` (`discussion_id`, `employee_id`),
+        INDEX (`discussion_id`),
+        INDEX (`employee_id`)
+    ) ENGINE=InnoDB;");
+
+    // Create calls table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `calls` (
+        `id` INT AUTO_INCREMENT PRIMARY KEY,
+        `discussion_id` INT NOT NULL,
+        `caller_id` INT NOT NULL,
+        `type` VARCHAR(50) NOT NULL,
+        `status` VARCHAR(50) NOT NULL DEFAULT 'ringing',
+        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (`discussion_id`),
+        INDEX (`caller_id`),
+        INDEX (`status`)
+    ) ENGINE=InnoDB;");
+
     // Create goal_tracker table
     $pdo->exec("CREATE TABLE IF NOT EXISTS `goal_tracker` (
         `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -315,6 +341,42 @@ try {
         `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX (`survey_id`)
     ) ENGINE=InnoDB;");
+
+    // 3. Alter tables to add columns safely without using unsupported IF NOT EXISTS syntax in ALTER TABLE
+    $tablesToAlter = [
+        'organizations' => ['phone' => 'VARCHAR(50) DEFAULT NULL', 'address' => 'TEXT DEFAULT NULL', 'details' => 'TEXT DEFAULT NULL'],
+        'employees' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'status' => "VARCHAR(50) NOT NULL DEFAULT 'Active'"],
+        'projects' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'fee_amount' => 'DECIMAL(15,2) DEFAULT 0.00'],
+        'tasks' => [
+            'org_id' => 'INT NOT NULL DEFAULT 1',
+            'estimated_duration' => 'INT DEFAULT 0',
+            'sequence_order' => 'INT DEFAULT 0',
+            'depends_on' => 'INT DEFAULT NULL',
+            'actual_start_date' => 'DATE DEFAULT NULL',
+            'actual_completion_date' => 'DATE DEFAULT NULL'
+        ],
+        'documents' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'encrypted' => "TINYINT(1) NOT NULL DEFAULT 0", 'enc_iv' => 'VARCHAR(255) DEFAULT NULL', 'original_name' => 'VARCHAR(255) DEFAULT NULL', 'mime_type' => 'VARCHAR(100) DEFAULT NULL'],
+        'discussions' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'is_direct' => 'TINYINT(1) NOT NULL DEFAULT 0'],
+        'pin_notes' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'clients' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'activities' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'attendance' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'timesheets' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'notifications' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'goal_tracker' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'document_logs' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+    ];
+
+    foreach ($tablesToAlter as $tbl => $cols) {
+        foreach ($cols as $colName => $colDef) {
+            try {
+                $checkCol = $pdo->query("SHOW COLUMNS FROM `$tbl` LIKE '$colName'")->fetch();
+                if (!$checkCol) {
+                    $pdo->exec("ALTER TABLE `$tbl` ADD COLUMN `$colName` $colDef");
+                }
+            } catch (PDOException $e) {}
+        }
+    }
 
 } catch (PDOException $e) {
     die("Database Connection failed: " . $e->getMessage());
@@ -392,6 +454,19 @@ if (!function_exists('time_elapsed_string')) {
 
         if (!$full) $string = array_slice($string, 0, 1);
         return $string ? implode(', ', $string) . ' ago' : 'just now';
+    }
+}
+
+if (!function_exists('render_avatar')) {
+    function render_avatar($avatar, $name, $extraStyles = '', $extraClasses = '') {
+        $initials = strtoupper(substr(trim($name), 0, 2));
+        if (empty($initials)) {
+            $initials = 'U';
+        }
+        if ($avatar && (strpos($avatar, '.') !== false || strpos($avatar, 'uploads/') !== false)) {
+            return '<img src="' . htmlspecialchars($avatar) . '" alt="' . htmlspecialchars($name) . '" class="' . htmlspecialchars($extraClasses) . '" style="object-fit: cover; border-radius: 50%; ' . $extraStyles . '">';
+        }
+        return '<div class="' . htmlspecialchars($extraClasses) . '" style="display: flex; align-items: center; justify-content: center; border-radius: 50%; ' . $extraStyles . '">' . htmlspecialchars($avatar ?: $initials) . '</div>';
     }
 }
 

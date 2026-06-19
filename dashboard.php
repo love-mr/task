@@ -27,9 +27,28 @@ $meName = $jwtPayload['name'];
 
 require_once 'db.php';
 
+// Dynamically fetch current user info from DB to avoid stale JWT data
+try {
+    $stmtUser = $pdo->prepare("SELECT org_id, role, name, status FROM `employees` WHERE id = ?");
+    $stmtUser->execute([$meId]);
+    $dbUser = $stmtUser->fetch(PDO::FETCH_ASSOC);
+    if ($dbUser) {
+        $jwtPayload['org_id'] = (int)$dbUser['org_id'];
+        $jwtPayload['role'] = $dbUser['role'];
+        $jwtPayload['name'] = $dbUser['name'];
+        $meName = $dbUser['name'];
+        if ($dbUser['status'] === 'Deactivated' || $dbUser['status'] === 'Pending') {
+            setcookie('vyala_taskpad_jwt_token', '', time() - 3600, '/');
+            header("Location: login.php?error=" . urlencode("Your account is pending approval or has been deactivated."));
+            exit;
+        }
+    }
+} catch (PDOException $ex) {}
+
 // Validate organization status for active session
 $meOrgId = (int)($jwtPayload['org_id'] ?? 0);
-if ($meOrgId > 0 && isset($jwtPayload['role']) && $jwtPayload['role'] !== 'Super Admin') {
+$isPlatformAdmin = ($jwtPayload['role'] === 'Super Admin' || ($jwtPayload['role'] === 'Admin' && $jwtPayload['email'] === 'admin'));
+if ($meOrgId > 0 && !$isPlatformAdmin) {
     try {
         $stmtOrgCheck = $pdo->prepare("SELECT status FROM `organizations` WHERE id = ?");
         $stmtOrgCheck->execute([$meOrgId]);
@@ -44,8 +63,8 @@ if ($meOrgId > 0 && isset($jwtPayload['role']) && $jwtPayload['role'] !== 'Super
 }
 
 try {
-    $isAdmin = ($jwtPayload['role'] === 'Admin');
-    $isOrgAdmin = ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Project Lead' || $jwtPayload['role'] === 'Super Admin');
+    $isAdmin = ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Super Admin');
+    $isOrgAdmin = ($jwtPayload['role'] === 'Project Lead');
     $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
 
     // =====================================================================
@@ -89,7 +108,7 @@ try {
             'actual_completion_date' => 'DATE DEFAULT NULL'
         ],
         'documents' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'encrypted' => "TINYINT(1) NOT NULL DEFAULT 0", 'enc_iv' => 'VARCHAR(255) DEFAULT NULL', 'original_name' => 'VARCHAR(255) DEFAULT NULL', 'mime_type' => 'VARCHAR(100) DEFAULT NULL'],
-        'discussions' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
+        'discussions' => ['org_id' => 'INT NOT NULL DEFAULT 1', 'is_direct' => 'TINYINT(1) NOT NULL DEFAULT 0'],
         'pin_notes' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
         'clients' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
         'activities' => ['org_id' => 'INT NOT NULL DEFAULT 1'],
@@ -148,6 +167,20 @@ try {
             UNIQUE KEY `uniq_disc_emp` (`discussion_id`, `employee_id`),
             INDEX `idx_dm_discussion` (`discussion_id`),
             INDEX `idx_dm_employee` (`employee_id`)
+        ) ENGINE=InnoDB");
+    } catch (PDOException $e) {}
+
+    // 11b. discussion_keys table
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS `discussion_keys` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY,
+            `discussion_id` INT NOT NULL,
+            `employee_id` INT NOT NULL,
+            `encrypted_key` TEXT NOT NULL,
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY `uniq_disc_emp_key` (`discussion_id`, `employee_id`),
+            INDEX `idx_dk_discussion` (`discussion_id`),
+            INDEX `idx_dk_employee` (`employee_id`)
         ) ENGINE=InnoDB");
     } catch (PDOException $e) {}
 
@@ -364,6 +397,7 @@ try {
     // 4. Fetch Discussions List (matching Screenshot 3 Recent Discussions)
     $discussionsList = $pdo->prepare("
         SELECT d.id, d.type, d.attachment_name, d.attachment_type, d.date_logged, d.created_at,
+               (SELECT COUNT(*) FROM `discussion_members` dm WHERE dm.discussion_id = d.id) as member_count,
                CASE 
                    WHEN d.type = 'Direct' THEN (
                        SELECT name FROM `employees` e 
@@ -372,7 +406,16 @@ try {
                        LIMIT 1
                    )
                    ELSE d.title 
-               END as title
+               END as title,
+               CASE 
+                   WHEN d.type = 'Direct' THEN (
+                       SELECT avatar FROM `employees` e 
+                       JOIN `discussion_members` dm ON e.id = dm.employee_id 
+                       WHERE dm.discussion_id = d.id AND dm.employee_id != ? 
+                       LIMIT 1
+                   )
+                   ELSE NULL 
+               END as direct_avatar
         FROM `discussions` d
         WHERE d.org_id = ? AND (d.type IN ('General', 'Task')
            OR (d.type = 'Direct' AND EXISTS (
@@ -380,7 +423,7 @@ try {
            )))
         ORDER BY d.id ASC
     ");
-    $discussionsList->execute([$meId, $meOrgId, $meId]);
+    $discussionsList->execute([$meId, $meId, $meOrgId, $meId]);
     $discussionsList = $discussionsList->fetchAll(PDO::FETCH_ASSOC);
 
     // 5. Fetch Activities List (matching Screenshot 4 Activity list)
@@ -559,7 +602,7 @@ try {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vyala Software TaskPad – Dashboard</title>
     <!-- CSS Stylesheet -->
-    <link rel="stylesheet" href="style.css?v=2606151929">
+    <link rel="stylesheet" href="style.css?v=<?= time() ?>">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         window.VYALA_USER_ROLE = "<?= $jwtPayload['role'] ?>";
@@ -857,9 +900,16 @@ try {
                                         <div style="font-size:11px; color:#64748b;">Monthly organizational goals &amp; milestones</div>
                                     </div>
                                 </div>
-                                <button onclick="openGoalModal()" style="display:flex; align-items:center; gap:6px; background:linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; border:none; border-radius:8px; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; transition:all 0.2s;">
-                                    <i data-lucide="plus" style="width:14px;height:14px;"></i> Add Goal
-                                </button>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <select id="goal-filter-select" onchange="filterGoals(this.value)" style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; color: #475569; outline: none; cursor: pointer; font-family: inherit;">
+                                        <option value="all">All Goals</option>
+                                        <option value="month">This Month</option>
+                                        <option value="year">This Year</option>
+                                    </select>
+                                    <button onclick="openGoalModal()" style="display:flex; align-items:center; gap:6px; background:linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; border:none; border-radius:8px; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; font-family:inherit; transition:all 0.2s;">
+                                        <i data-lucide="plus" style="width:14px;height:14px;"></i> Add Goal
+                                    </button>
+                                </div>
                             </div>
                             <!-- Summary Stats -->
                             <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:0; border-bottom:1px solid #e2e8f0;">
@@ -883,13 +933,12 @@ try {
                             </div>
                             <!-- Goals List -->
                             <div style="padding:16px 20px; display:flex; flex-direction:column; gap:12px;">
-                                <?php if (empty($goalsList)): ?>
-                                <div style="text-align:center; padding:40px 20px; color:#94a3b8;">
+                                <div id="goal-empty-msg" style="display: <?= empty($goalsList) ? 'block' : 'none' ?>; text-align:center; padding:40px 20px; color:#94a3b8;">
                                     <i data-lucide="target" style="width:40px;height:40px;margin-bottom:12px;color:#cbd5e1;display:block;margin-left:auto;margin-right:auto;"></i>
-                                    <div style="font-size:14px; font-weight:600; margin-bottom:4px;">No Goals Yet</div>
-                                    <div style="font-size:12px;">Click "Add Goal" to create your first monthly goal.</div>
+                                    <div style="font-size:14px; font-weight:600; margin-bottom:4px;">No Goals Found</div>
+                                    <div style="font-size:12px;">There are no goals matching the selected filter.</div>
                                 </div>
-                                <?php else: foreach($goalsList as $goal):
+                                <?php if (!empty($goalsList)): foreach($goalsList as $goal):
                                     $gStart = new DateTime($goal['start_date']);
                                     $gTarget = new DateTime($goal['target_date']);
                                     $gNow = new DateTime($today);
@@ -907,7 +956,7 @@ try {
                                     $sc = $statusColors[$goal['status']] ?? $statusColors['Not Started'];
                                     $barColor = $goal['status'] === 'Completed' ? '#10b981' : ($goal['status'] === 'Overdue' ? '#ef4444' : '#6366f1');
                                 ?>
-                                <div class="goal-card" style="border:1px solid #e2e8f0; border-radius:10px; padding:14px 16px; background:#fff; transition:all 0.2s;">
+                                <div class="goal-card goal-item-row" data-target-date="<?= htmlspecialchars($goal['target_date']) ?>" style="border:1px solid #e2e8f0; border-radius:10px; padding:14px 16px; background:#fff; transition:all 0.2s;">
                                     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
                                         <div style="flex:1; min-width:0;">
                                             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
@@ -1008,6 +1057,42 @@ try {
                         </div>
                     </div>
                     <script>
+                    function filterGoals(type) {
+                        const goals = document.querySelectorAll('.goal-item-row');
+                        const now = new Date();
+                        const currentYear = now.getFullYear().toString();
+                        const currentMonth = (now.getMonth() + 1).toString().padStart(2, '0');
+                        const currentYM = `${currentYear}-${currentMonth}`;
+                        
+                        let visibleCount = 0;
+                        
+                        goals.forEach(goal => {
+                            const targetDate = goal.getAttribute('data-target-date');
+                            if (type === 'all') {
+                                goal.style.display = 'block';
+                                visibleCount++;
+                            } else if (type === 'month') {
+                                if (targetDate && targetDate.startsWith(currentYM)) {
+                                    goal.style.display = 'block';
+                                    visibleCount++;
+                                } else {
+                                    goal.style.display = 'none';
+                                }
+                            } else if (type === 'year') {
+                                if (targetDate && targetDate.startsWith(currentYear)) {
+                                    goal.style.display = 'block';
+                                    visibleCount++;
+                                } else {
+                                    goal.style.display = 'none';
+                                }
+                            }
+                        });
+                        
+                        const emptyMsg = document.getElementById('goal-empty-msg');
+                        if (emptyMsg) {
+                            emptyMsg.style.display = (visibleCount === 0) ? 'block' : 'none';
+                        }
+                    }
                     function openGoalModal() {
                         document.getElementById('goalModal').style.display = 'flex';
                     }
@@ -1780,6 +1865,9 @@ try {
                         <div style="display: flex; gap: 20px;">
                             <span class="proj-tab-btn active" style="font-size: 13px; font-weight: 600; color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 8px; cursor: pointer;">Created By Me</span>
                             <span class="proj-tab-btn" style="font-size: 13px; font-weight: 600; color: #64748b; padding-bottom: 8px; cursor: pointer;">My Team Project</span>
+                            <?php if ($isOrgAdmin): ?>
+                                <span class="proj-tab-btn" style="font-size: 13px; font-weight: 600; color: #64748b; padding-bottom: 8px; cursor: pointer;">All Projects</span>
+                            <?php endif; ?>
                         </div>
                     </div>
 
@@ -1838,8 +1926,13 @@ try {
                                         $pMembers = $projMemberDetails[$p['id']] ?? [];
                                         if (!empty($pMembers)) {
                                             foreach ($pMembers as $pm) {
-                                                $initials = htmlspecialchars($pm['avatar'] ?: 'U');
-                                                echo '<div class="assignee-avatar-circle aac-' . strtolower($initials) . '" title="' . htmlspecialchars($pm['name']) . '">' . $initials . '</div>';
+                                                $avatarVal = $pm['avatar'];
+                                                if ($avatarVal && (strpos($avatarVal, '.') !== false || strpos($avatarVal, 'uploads/') !== false)) {
+                                                    echo '<img src="' . htmlspecialchars($avatarVal) . '" class="assignee-avatar-circle" title="' . htmlspecialchars($pm['name']) . '" style="object-fit: cover; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #ffffff; margin-left: -6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">';
+                                                } else {
+                                                    $initials = strtoupper(substr(htmlspecialchars($avatarVal ?: $pm['name']), 0, 2));
+                                                    echo '<div class="assignee-avatar-circle aac-' . strtolower($initials) . '" title="' . htmlspecialchars($pm['name']) . '">' . $initials . '</div>';
+                                                }
                                             }
                                         } else {
                                             try {
@@ -1850,8 +1943,13 @@ try {
                                                     echo '<div class="assignee-avatar-circle aac-sj" title="SELVAKUMAR J">SJ</div>';
                                                 } else {
                                                     foreach ($fallbackAss as $ass) {
-                                                        $ini = htmlspecialchars($ass['avatar'] ?: 'U');
-                                                        echo '<div class="assignee-avatar-circle aac-' . strtolower($ini) . '" title="' . htmlspecialchars($ass['name']) . '">' . $ini . '</div>';
+                                                        $avatarVal = $ass['avatar'];
+                                                        if ($avatarVal && (strpos($avatarVal, '.') !== false || strpos($avatarVal, 'uploads/') !== false)) {
+                                                            echo '<img src="' . htmlspecialchars($avatarVal) . '" class="assignee-avatar-circle" title="' . htmlspecialchars($ass['name']) . '" style="object-fit: cover; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #ffffff; margin-left: -6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">';
+                                                        } else {
+                                                            $ini = strtoupper(substr(htmlspecialchars($avatarVal ?: $ass['name']), 0, 2));
+                                                            echo '<div class="assignee-avatar-circle aac-' . strtolower($ini) . '" title="' . htmlspecialchars($ass['name']) . '">' . $ini . '</div>';
+                                                        }
                                                     }
                                                 }
                                             } catch (PDOException $ex) {
@@ -1888,7 +1986,7 @@ try {
                                 <h3>Discussion</h3>
                                 <div style="display: flex; gap: 8px;">
                                     <button class="header-btn" id="btn-new-discussion" title="New Discussion" style="width: 28px; height: 28px; border: 1px solid var(--sidebar-border); border-radius: 50%; display: flex; align-items: center; justify-content: center; background: transparent; cursor: pointer; color: var(--text-muted);"><i data-lucide="plus" style="width: 14px; height: 14px;"></i></button>
-                                    <button class="header-btn" id="btn-new-group" title="Group Chat" style="width: 28px; height: 28px; border: 1px solid var(--sidebar-border); border-radius: 50%; display: flex; align-items: center; justify-content: center; background: transparent; cursor: pointer; color: var(--text-muted);"><i data-lucide="users" style="width: 14px; height: 14px;"></i></button>
+                                    <button class="header-btn" id="btn-new-direct-message" title="Start Direct Message" style="width: 28px; height: 28px; border: 1px solid var(--sidebar-border); border-radius: 50%; display: flex; align-items: center; justify-content: center; background: transparent; cursor: pointer; color: var(--text-muted);"><i data-lucide="message-square" style="width: 14px; height: 14px;"></i></button>
                                 </div>
                             </div>
 
@@ -1927,13 +2025,26 @@ try {
                                     if ($d['attachment_name']) {
                                         $preview = "Attachment: " . $d['attachment_name'];
                                     }
+                                    
+                                    // Custom avatar rendering
+                                    $avatarVal = $initials;
+                                    $avatarHtml = '<div class="chat-thread-avatar ' . $discColor . '">' . htmlspecialchars($initials) . '</div>';
+                                    if ($d['type'] === 'Direct' && !empty($d['direct_avatar'])) {
+                                        $avatarVal = $d['direct_avatar'];
+                                        if (strpos($avatarVal, '.') !== false || strpos($avatarVal, 'uploads/') !== false) {
+                                            $avatarHtml = '<img src="' . htmlspecialchars($avatarVal) . '" class="chat-thread-avatar" style="object-fit: cover; border-radius: 50%; width: 36px; height: 36px;">';
+                                        }
+                                    }
                                 ?>
-                                    <div class="chat-thread-item <?= $isActive ? 'active' : '' ?>" data-chat-id="<?= $d['id'] ?>" data-chat-type="<?= htmlspecialchars($d['type']) ?>" data-chat-title="<?= htmlspecialchars($d['title']) ?>" data-chat-avatar="<?= $initials ?>" data-chat-color="<?= $discColor ?>">
-                                        <div class="chat-thread-avatar <?= $discColor ?>"><?= $initials ?></div>
+                                    <div class="chat-thread-item <?= $isActive ? 'active' : '' ?>" data-chat-id="<?= $d['id'] ?>" data-chat-type="<?= htmlspecialchars($d['type']) ?>" data-chat-title="<?= htmlspecialchars($d['title']) ?>" data-chat-avatar="<?= htmlspecialchars($avatarVal) ?>" data-chat-color="<?= $discColor ?>" data-chat-members="<?= (int)($d['member_count'] ?? 1) ?>">
+                                        <?= $avatarHtml ?>
                                         <div class="chat-thread-info">
-                                            <div class="chat-thread-name-row">
-                                                <span class="chat-thread-name"><?= htmlspecialchars($d['title']) ?></span>
-                                                <span class="chat-thread-time"><?= htmlspecialchars($d['date_logged']) ?></span>
+                                            <div class="chat-thread-name-row" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                                                <span class="chat-thread-name" style="flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><?= htmlspecialchars($d['title']) ?></span>
+                                                <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                                                    <span class="chat-thread-time"><?= htmlspecialchars($d['date_logged']) ?></span>
+                                                    <button class="thread-delete-btn" title="Delete Chat" style="background:transparent; border:none; color:#94a3b8; cursor:pointer; font-size:16px; padding:2px 4px; display:inline-flex; align-items:center; justify-content:center; line-height:1; transition:color 0.2s;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#94a3b8'">&times;</button>
+                                                </div>
                                             </div>
                                             <span class="chat-thread-preview"><?= htmlspecialchars($preview) ?></span>
                                         </div>
@@ -1954,12 +2065,16 @@ try {
                                         <span class="chat-window-members">5 Members active in channel</span>
                                     </div>
                                 </div>
-                                <div class="chat-window-actions" style="display: flex; align-items: center;">
-                                    <button id="chat-header-members" title="Manage Members" style="background:transparent; border:none; cursor:pointer; color:var(--text-muted); display:flex; align-items:center; justify-content:center; margin-right:14px;"><i data-lucide="users" style="width: 16px; height: 16px;"></i></button>
-                                    <i data-lucide="phone" class="chat-header-actions" style="cursor: pointer; width: 16px; height: 16px;"></i>
-                                    <i data-lucide="video" class="chat-header-actions" style="cursor: pointer; width: 16px; height: 16px; margin-left: 14px;"></i>
-                                    <i data-lucide="info" class="chat-header-actions" style="cursor: pointer; width: 16px; height: 16px; margin-left: 14px;"></i>
-                                    <button id="chat-close-btn" title="Close Chat" style="background:transparent; border:none; cursor:pointer; color:#ef4444; display:flex; align-items:center; justify-content:center; margin-left:14px;"><i data-lucide="x" style="width: 18px; height: 18px;"></i></button>
+                                <div class="chat-window-actions" style="display: flex; align-items: center; gap: 14px;">
+                                    <button id="chat-call-audio-btn" title="Voice Call" style="background:transparent; border:none; cursor:pointer; color:var(--text-muted); display:flex; align-items:center; justify-content:center; padding:2px;" onclick="if(window.currentActiveDiscussionId) window.vyalaCalls.startCall(window.currentActiveDiscussionId, 'audio')" onmouseover="this.style.color='#2563eb'" onmouseout="this.style.color='var(--text-muted)'">
+                                        <i data-lucide="phone" style="width: 16px; height: 16px;"></i>
+                                    </button>
+                                    <button id="chat-call-video-btn" title="Video Call" style="background:transparent; border:none; cursor:pointer; color:var(--text-muted); display:flex; align-items:center; justify-content:center; padding:2px;" onclick="if(window.currentActiveDiscussionId) window.vyalaCalls.startCall(window.currentActiveDiscussionId, 'video')" onmouseover="this.style.color='#2563eb'" onmouseout="this.style.color='var(--text-muted)'">
+                                        <i data-lucide="video" style="width: 16px; height: 16px;"></i>
+                                    </button>
+                                    <button id="chat-header-members" title="Manage Members" style="background:transparent; border:none; cursor:pointer; color:var(--text-muted); display:flex; align-items:center; justify-content:center; padding:2px;"><i data-lucide="users" style="width: 16px; height: 16px;"></i></button>
+                                    <button id="chat-delete-btn" title="Delete Discussion" style="background:transparent; border:none; cursor:pointer; color:#ef4444; display:flex; align-items:center; justify-content:center; padding:2px;"><i data-lucide="trash-2" style="width: 16px; height: 16px;"></i></button>
+                                    <button id="chat-close-btn" title="Close Chat" style="background:transparent; border:none; cursor:pointer; color:#64748b; display:flex; align-items:center; justify-content:center; padding:2px;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#64748b'"><i data-lucide="x" style="width: 18px; height: 18px;"></i></button>
                                 </div>
                             </div>
 
@@ -2327,7 +2442,7 @@ try {
                             ?>
                             <div class="attendance-row" data-emp-name="<?= htmlspecialchars($r['name']) ?>" data-date="<?= $r['date'] ?>" data-status="<?= htmlspecialchars($r['status']) ?>" data-check-in="<?= $inTime ?>" data-check-out="<?= $outTime ?>" data-hours="<?= $hrs ?>" style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid #f1f5f9; font-size:13px;">
                                 <div style="flex:1.5; display:flex; align-items:center; gap:10px;">
-                                    <div class="avatar-initials" style="background:#2563eb; color:#fff; width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700;"><?= htmlspecialchars($initials) ?></div>
+                                    <?= render_avatar($r['avatar'], $r['name'], 'background-color: #2563eb; color: #fff; width: 30px; height: 30px; font-weight: 700; font-size: 11px;', 'avatar-initials') ?>
                                     <span style="font-weight:600; color:#0f172a;"><?= htmlspecialchars($r['name']) ?></span>
                                 </div>
                                 <div style="flex:1; color:#64748b; font-size:12.5px;"><?= date('d M Y', strtotime($r['date'])) ?></div>
@@ -2401,7 +2516,15 @@ try {
                             ?>
                             <div style="display:flex; align-items:center; padding:11px 16px; border-bottom:1px solid #f1f5f9; font-size:13px;">
                                 <div style="flex:2; display:flex; align-items:center; gap:8px;">
-                                    <div style="background:#2563eb;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;"><?= htmlspecialchars($emp['avatar'] ?: substr($emp['name'],0,2)) ?></div>
+                                    <?php
+                                    $empAvatarVal = $emp['avatar'];
+                                    if ($empAvatarVal && (strpos($empAvatarVal, '.') !== false || strpos($empAvatarVal, 'uploads/') !== false)) {
+                                        echo '<img src="' . htmlspecialchars($empAvatarVal) . '" alt="' . htmlspecialchars($emp['name']) . '" style="object-fit: cover; width: 28px; height: 28px; border-radius: 50%; border: 1px solid #e2e8f0;">';
+                                    } else {
+                                        $empInitials = strtoupper(substr(htmlspecialchars($empAvatarVal ?: $emp['name']), 0, 2));
+                                        echo '<div style="background:#2563eb;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">' . $empInitials . '</div>';
+                                    }
+                                    ?>
                                     <span style="font-weight:600;color:#0f172a;"><?= htmlspecialchars($emp['name']) ?></span>
                                 </div>
                                 <div style="flex:1;font-weight:600;"><?= $asgn ?></div>
@@ -2423,10 +2546,11 @@ try {
                 </div>
                 <?php endif; ?>
 
-                <!-- ===== ORGANIZATIONS VIEW (Platform Admin only) ===== -->
-                <?php if ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Super Admin'): ?>
+                <!-- ===== ORGANIZATIONS VIEW (Platform Admin and Org Admin) ===== -->
+                <?php if ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Super Admin' || $jwtPayload['role'] === 'Project Lead'): ?>
                 <div id="view-organizations" class="tab-view active">
                     <div class="section-card">
+                        <?php if ($jwtPayload['role'] === 'Admin' || $jwtPayload['role'] === 'Super Admin'): ?>
                         <div class="card-header" style="border-bottom: none; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center;">
                             <div>
                                 <h3>Organizations</h3>
@@ -2626,7 +2750,71 @@ try {
                                     </tbody>
                                 </table>
                             </div>
-                        </div>
+                        <?php endif; ?>
+
+                        <?php else: ?>
+                            <!-- Organization Lead (Project Lead): View/Edit Own Organization Details -->
+                            <?php
+                            $stmtOwnOrg = $pdo->prepare("SELECT * FROM `organizations` WHERE id = ?");
+                            $stmtOwnOrg->execute([$meOrgId]);
+                            $ownOrg = $stmtOwnOrg->fetch(PDO::FETCH_ASSOC);
+                            ?>
+                            <div class="card-header" style="border-bottom: none; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center; padding: 0 0 15px 0;">
+                                <div>
+                                    <h3 style="font-size: 18px; font-weight: 700; color: var(--text-dark);">Organization Details</h3>
+                                    <p class="text-muted" style="margin-top: 4px; font-size: 12px; text-transform: none; letter-spacing: normal;">Manage your company profile details and contact information.</p>
+                                </div>
+                            </div>
+                            
+                            <?php if ($ownOrg): ?>
+                                <form action="api.php?action=update_own_organization" method="POST" id="form-update-own-org" style="margin-top: 20px; max-width: 500px; display: flex; flex-direction: column; gap: 16px;">
+                                    <div class="form-group">
+                                        <label style="font-weight: 600; margin-bottom: 6px; display: block; font-size: 13px;">Organization Name</label>
+                                        <input type="text" class="form-control" value="<?= htmlspecialchars($ownOrg['name']) ?>" readonly style="background: #f1f5f9; cursor: not-allowed; width: 100%; height: 38px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                                    </div>
+                                    <div class="form-group">
+                                        <label style="font-weight: 600; margin-bottom: 6px; display: block; font-size: 13px;">Slug / Code</label>
+                                        <input type="text" class="form-control" value="<?= htmlspecialchars($ownOrg['slug']) ?>" readonly style="background: #f1f5f9; cursor: not-allowed; width: 100%; height: 38px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="org-phone" style="font-weight: 600; margin-bottom: 6px; display: block; font-size: 13px;">Phone Number</label>
+                                        <input type="text" name="phone" id="org-phone" class="form-control" value="<?= htmlspecialchars($ownOrg['phone'] ?? '') ?>" required style="width: 100%; height: 38px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none;">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="org-address" style="font-weight: 600; margin-bottom: 6px; display: block; font-size: 13px;">Address</label>
+                                        <textarea name="address" id="org-address" class="form-control" rows="3" required style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; font-family: inherit; font-size: 14px; resize: vertical;"><?= htmlspecialchars($ownOrg['address'] ?? '') ?></textarea>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="org-details" style="font-weight: 600; margin-bottom: 6px; display: block; font-size: 13px;">Company Details / About</label>
+                                        <textarea name="details" id="org-details" class="form-control" rows="4" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; font-family: inherit; font-size: 14px; resize: vertical;"><?= htmlspecialchars($ownOrg['details'] ?? '') ?></textarea>
+                                    </div>
+                                    <div>
+                                        <button type="submit" class="welcome-btn" style="border: none; cursor: pointer; padding: 10px 20px; font-weight: 600; border-radius: 6px; display: inline-flex; align-items: center; gap: 8px;">
+                                            Save Changes
+                                        </button>
+                                    </div>
+                                </form>
+                                <script>
+                                document.getElementById('form-update-own-org')?.addEventListener('submit', async function(e) {
+                                    e.preventDefault();
+                                    const fd = new FormData(this);
+                                    try {
+                                        const r = await fetch(this.action, { method: 'POST', body: fd });
+                                        const res = await r.json();
+                                        if (res.success) {
+                                            alert('Organization details updated successfully!');
+                                            window.location.reload();
+                                        } else {
+                                            alert('Failed to update: ' + (res.message || 'Unknown error'));
+                                        }
+                                    } catch(err) {
+                                        alert('Error updating organization.');
+                                    }
+                                });
+                                </script>
+                            <?php else: ?>
+                                <p style="color: var(--text-muted);">Organization profile not found.</p>
+                            <?php endif; ?>
                         <?php endif; ?>
 
                     </div>
@@ -2885,11 +3073,15 @@ try {
                     <div class="settings-grid-layout" style="display: flex; gap: 24px; max-width: 1000px; margin: 0 auto; flex-wrap: wrap;">
                         <!-- Profile Card -->
                         <div class="section-card settings-profile-card" style="flex: 1; min-width: 280px; display: flex; flex-direction: column; align-items: center; text-align: center; padding: 30px;">
-                            <div class="settings-avatar-wrapper" style="position: relative; margin-bottom: 20px;">
-                                <div class="settings-large-avatar" style="background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 700; border: 4px solid #ffffff; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
-                                    <?= htmlspecialchars($meAvatar) ?>
-                                </div>
-                            </div>
+                             <div class="settings-avatar-wrapper" style="position: relative; margin-bottom: 20px;">
+                                 <?php if ($meAvatar && (strpos($meAvatar, '.') !== false || strpos($meAvatar, 'uploads/') !== false)): ?>
+                                     <img src="<?= htmlspecialchars($meAvatar) ?>" alt="<?= htmlspecialchars($meName) ?>" class="settings-large-avatar" style="object-fit: cover; width: 80px; height: 80px; border-radius: 50%; border: 4px solid #ffffff; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
+                                 <?php else: ?>
+                                     <div class="settings-large-avatar" style="background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; width: 80px; height: 80px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 700; border: 4px solid #ffffff; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);">
+                                         <?= htmlspecialchars($meAvatar) ?>
+                                     </div>
+                                 <?php endif; ?>
+                             </div>
                             <h3 style="font-size: 18px; font-weight: 700; color: #0f172a; margin-bottom: 6px;"><?= htmlspecialchars($meName) ?></h3>
                             <span class="badge" style="background-color: #eff6ff; color: #2563eb; padding: 4px 12px; border-radius: 9999px; font-size: 11px; font-weight: 600; margin-bottom: 15px;"><?= htmlspecialchars($meRole) ?></span>
                             
@@ -2905,7 +3097,7 @@ try {
                             <div class="card-header" style="border-bottom: 1px solid #f1f5f9; padding-bottom: 12px; margin-bottom: 20px;">
                                 <h3>Account Information</h3>
                             </div>
-                            <form id="form-update-settings" method="POST">
+                            <form id="form-update-settings" method="POST" enctype="multipart/form-data">
                                 <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
                                     <div class="form-group" style="grid-column: span 2;">
                                         <label for="set-name">Full Name *</label>
@@ -2925,7 +3117,19 @@ try {
                                     </div>
                                     <div class="form-group">
                                         <label for="set-avatar">Avatar Initials (e.g. SJ)</label>
-                                        <input type="text" name="avatar" id="set-avatar" class="form-control" value="<?= htmlspecialchars($meAvatar) ?>" maxlength="2">
+                                        <input type="text" name="avatar" id="set-avatar" class="form-control" value="<?= htmlspecialchars(strpos($meAvatar, '/') !== false ? substr($meName, 0, 2) : $meAvatar) ?>" maxlength="2">
+                                    </div>
+                                    <div class="form-group" style="grid-column: span 2;">
+                                        <label for="set-photo">Profile Photo (Upload Image)</label>
+                                        <?php if ($meAvatar && (strpos($meAvatar, '.') !== false || strpos($meAvatar, 'uploads/') !== false)): ?>
+                                            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                                                <img src="<?= htmlspecialchars($meAvatar) ?>" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 1px solid #cbd5e1;">
+                                                <label style="display: flex; align-items: center; gap: 6px; font-weight: normal; cursor: pointer; color: var(--text-color);">
+                                                    <input type="checkbox" name="remove_photo" value="1" style="width: auto;"> Remove current photo
+                                                </label>
+                                            </div>
+                                        <?php endif; ?>
+                                        <input type="file" name="photo" id="set-photo" class="form-control" accept="image/*" style="padding: 6px;">
                                     </div>
                                 </div>
                                 <div class="form-group" style="margin-top: 20px; border-top: 1px solid #f1f5f9; padding-top: 15px;">
@@ -3368,34 +3572,36 @@ try {
                                         <?= htmlspecialchars($s['status']) ?>
                                     </span>
                                 </td>
-                                <td style="padding: 12px 16px; display: flex; gap: 8px;">
-                                    <button class="btn-action edit-survey" data-id="<?= $s['id'] ?>"
-                                        data-json='<?= htmlspecialchars(json_encode($s), ENT_QUOTES, 'UTF-8') ?>'
-                                        style="background:none; border:none; color:#3b82f6; cursor:pointer;"
-                                        title="Edit">
-                                        <i data-lucide="edit-3" style="width:16px;height:16px;"></i>
-                                    </button>
-                                    <button class="btn-action verify-survey" data-id="<?= $s['id'] ?>"
-                                        style="background:none; border:none; color:#10b981; cursor:pointer;"
-                                        title="Verify">
-                                        <i data-lucide="check-circle" style="width:16px;height:16px;"></i>
-                                    </button>
-                                    <button class="btn-action history-survey" data-id="<?= $s['id'] ?>"
-                                        style="background:none; border:none; color:#8b5cf6; cursor:pointer;"
-                                        title="History">
-                                        <i data-lucide="clock" style="width:16px;height:16px;"></i>
-                                    </button>
-                                    <button class="btn-action archive-survey" data-id="<?= $s['id'] ?>"
-                                        style="background:none; border:none; color:#ef4444; cursor:pointer;"
-                                        title="Archive">
-                                        <i data-lucide="archive" style="width:16px;height:16px;"></i>
-                                    </button>
-                                    <?php if ($s['document_path']): ?>
-                                        <a href="<?= htmlspecialchars($s['document_path']) ?>" target="_blank"
-                                            style="color:#06b6d4;" title="View Document">
-                                            <i data-lucide="file-text" style="width:16px;height:16px;"></i>
-                                        </a>
-                                    <?php endif; ?>
+                                <td style="padding: 12px 16px;">
+                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                        <button class="btn-action edit-survey" data-id="<?= $s['id'] ?>"
+                                            data-json='<?= htmlspecialchars(json_encode($s), ENT_QUOTES, 'UTF-8') ?>'
+                                            style="background:none; border:none; color:#3b82f6; cursor:pointer;"
+                                            title="Edit">
+                                            <i data-lucide="edit-3" style="width:16px;height:16px;"></i>
+                                        </button>
+                                        <button class="btn-action verify-survey" data-id="<?= $s['id'] ?>"
+                                            style="background:none; border:none; color:#10b981; cursor:pointer;"
+                                            title="Verify">
+                                            <i data-lucide="check-circle" style="width:16px;height:16px;"></i>
+                                        </button>
+                                        <button class="btn-action history-survey" data-id="<?= $s['id'] ?>"
+                                            style="background:none; border:none; color:#8b5cf6; cursor:pointer;"
+                                            title="History">
+                                            <i data-lucide="clock" style="width:16px;height:16px;"></i>
+                                        </button>
+                                        <button class="btn-action archive-survey" data-id="<?= $s['id'] ?>"
+                                            style="background:none; border:none; color:#ef4444; cursor:pointer;"
+                                            title="Archive">
+                                            <i data-lucide="archive" style="width:16px;height:16px;"></i>
+                                        </button>
+                                        <?php if ($s['document_path']): ?>
+                                            <a href="<?= htmlspecialchars($s['document_path']) ?>" target="_blank"
+                                                style="color:#06b6d4; display: flex; align-items: center; justify-content: center;" title="View Document">
+                                                <i data-lucide="file-text" style="width:16px;height:16px;"></i>
+                                            </a>
+                                        <?php endif; ?>
+                                    </div>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
@@ -4251,7 +4457,7 @@ try {
     <!-- JS CDN Packages -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=<?= time() ?>"></script>
     <!-- PDF Export Script -->
     <script>
     async function downloadProjectPDF(projectId, projectName) {

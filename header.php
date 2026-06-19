@@ -21,6 +21,7 @@ if ($jwtPayload) {
         $meRole = $me['role'];
         $meCode = $me['emp_code'] ?: 'T-130555';
         $meAvatar = $me['avatar'] ?: substr($meName, 0, 2);
+        $meOrgId = (int)$me['org_id']; // Fetch dynamically from database to avoid stale cookie org_id
     }
 }
 
@@ -128,10 +129,7 @@ try {
         <!-- User Profile (SJ, SELVAKUMAR J) -->
         <div class="user-profile-wrapper" style="position: relative; display: flex; align-items: center;">
             <div class="user-profile" id="profile-toggle">
-                <div class="avatar-initials"
-                    style="background-color: #dc2626; color: white; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; font-family: var(--font-sans);">
-                    <?= htmlspecialchars($meAvatar) ?>
-                </div>
+                <?= render_avatar($meAvatar, $meName, 'background-color: #dc2626; color: white; width: 34px; height: 34px; font-weight: 700; font-size: 13px; font-family: var(--font-sans);', 'avatar-initials') ?>
                 <div class="user-info">
                     <span class="user-name"><?= htmlspecialchars($meName) ?></span>
                     <span class="user-role"><?= htmlspecialchars($meCode) ?></span>
