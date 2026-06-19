@@ -3266,6 +3266,131 @@ body.dark-theme .note-tab-btn.active {
     border-bottom-color: #38bdf8 !important;
 }
 
+/* Dashboard Replica Dark Mode Overrides */
+body.dark-theme .rsk-card-sm,
+body.dark-theme .rsk-panel,
+body.dark-theme .rsk-qa-btn,
+body.dark-theme .rsk-step-count {
+    background-color: #1e293b !important;
+    background: #1e293b !important;
+    border-color: #334155 !important;
+    color: #f8fafc !important;
+}
+
+body.dark-theme .rsk-card-title,
+body.dark-theme .rsk-qa-text,
+body.dark-theme .rsk-step-title {
+    color: #94a3b8 !important;
+}
+
+body.dark-theme .rsk-card-value,
+body.dark-theme .rsk-panel-title {
+    color: #f8fafc !important;
+}
+
+body.dark-theme .rsk-stepper::before {
+    background: #334155 !important;
+}
+
+body.dark-theme .rsk-step-circle {
+    background: #0f172a !important;
+    border-color: #334155 !important;
+    box-shadow: 0 0 0 1px #334155 !important;
+}
+
+body.dark-theme .rsk-table th {
+    color: #94a3b8 !important;
+    border-bottom-color: #334155 !important;
+}
+
+body.dark-theme .rsk-table td {
+    color: #f8fafc !important;
+    border-bottom-color: #334155 !important;
+}
+
+body.dark-theme .rsk-progress-bar {
+    background: #334155 !important;
+}
+
+/* Global Form Controls & Inline Style overrides for dark mode */
+body.dark-theme input,
+body.dark-theme textarea,
+body.dark-theme select {
+    background-color: #0f172a !important;
+    background: #0f172a !important;
+    color: #f8fafc !important;
+    border-color: #334155 !important;
+}
+
+/* Inline Styles Overrides for 3-digit hex backgrounds */
+body.dark-theme [style*="background: #fff"],
+body.dark-theme [style*="background:#fff"],
+body.dark-theme [style*="background-color: #fff"],
+body.dark-theme [style*="background-color:#fff"],
+body.dark-theme [style*="background: #ffffff"],
+body.dark-theme [style*="background:#ffffff"],
+body.dark-theme [style*="background-color: #ffffff"],
+body.dark-theme [style*="background-color:#ffffff"] {
+    background-color: #1e293b !important;
+    background: #1e293b !important;
+}
+
+/* Map light grey backgrounds to dark backgrounds */
+body.dark-theme [style*="background: #f1f5f9"],
+body.dark-theme [style*="background:#f1f5f9"],
+body.dark-theme [style*="background-color: #f1f5f9"],
+body.dark-theme [style*="background-color:#f1f5f9"] {
+    background-color: #0f172a !important;
+    background: #0f172a !important;
+}
+
+/* Map light-color notification icon badges to dark mode equivalents */
+body.dark-theme [style*="background:#fff1f2"],
+body.dark-theme [style*="background: #fff1f2"],
+body.dark-theme [style*="background:#fef2f2"],
+body.dark-theme [style*="background: #fef2f2"] {
+    background-color: #7f1d1d !important;
+    background: #7f1d1d !important;
+}
+body.dark-theme [style*="background:#fef3c7"],
+body.dark-theme [style*="background: #fef3c7"] {
+    background-color: #7c2d12 !important;
+    background: #7c2d12 !important;
+}
+body.dark-theme [style*="background:#dcfce7"],
+body.dark-theme [style*="background: #dcfce7"] {
+    background-color: #064e3b !important;
+    background: #064e3b !important;
+}
+body.dark-theme [style*="background:#eff6ff"],
+body.dark-theme [style*="background: #eff6ff"] {
+    background-color: #1e3a8a !important;
+    background: #1e3a8a !important;
+}
+
+/* Map notification icon colors to higher contrast dark mode equivalents */
+body.dark-theme [style*="color:#ef4444"],
+body.dark-theme [style*="color: #ef4444"] {
+    color: #fca5a5 !important;
+}
+body.dark-theme [style*="color:#f59e0b"],
+body.dark-theme [style*="color: #f59e0b"] {
+    color: #fdba74 !important;
+}
+body.dark-theme [style*="color:#10b981"],
+body.dark-theme [style*="color: #10b981"] {
+    color: #34d399 !important;
+}
+body.dark-theme [style*="color:#3b82f6"],
+body.dark-theme [style*="color: #3b82f6"] {
+    color: #60a5fa !important;
+}
+
+/* Custom CSS variables support for dynamic variables */
+body.dark-theme {
+    --bg-light: #0f172a !important;
+}
+
 /* ==========================================================================
    STANDARDIZED SEARCH WRAPPER & SETTINGS PAGE STYLING
    ========================================================================== */
@@ -3345,8 +3470,7 @@ body.dark-theme .note-tab-btn.active {
 .settings-grid-layout {
     display: flex;
     gap: 24px;
-    max-width: 1000px;
-    margin: 0 auto;
+    width: 100%;
     flex-wrap: wrap;
 }
 .settings-profile-card {

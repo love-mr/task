@@ -110,7 +110,7 @@
 
     <!-- Footer Bottom Bar -->
     <div style="border-top:1px solid #1e293b; padding:20px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-        <span style="font-size:13px;">&copy; <?= date('Y') ?> Vyala Software Solutions. All rights reserved.</span>
+        <span style="font-size:13px;">&copy; 2026 Vyala Software TaskPad. All rights reserved. Software Version 2.0.0</span>
         <div style="display:flex; gap:20px;">
             <a href="#" style="font-size:13px; color:#94a3b8; text-decoration:none;">Privacy Policy</a>
             <a href="#" style="font-size:13px; color:#94a3b8; text-decoration:none;">Terms of Service</a>

@@ -1259,7 +1259,7 @@ if (verify_jwt($jwtToken)) {
     </div>
     <hr class="footer-divider">
     <div class="footer-bottom">
-        <span>&copy; <?= date('Y') ?> Vyala Software TaskPad. All rights reserved.</span>
+        <span>&copy; 2026 Vyala Software TaskPad. All rights reserved. Software Version 2.0.0</span>
         <span>Designed &amp; developed by Vyala Software</span>
     </div>
 </footer>

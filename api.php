@@ -2028,7 +2028,7 @@ try {
         // ==========================================
         // SURVEY MANAGEMENT MODULE
         $meOrgId = (int)($jwtPayload['org_id'] ?? 1);
-        $meId = (int)($jwtPayload['user_id'] ?? 1);
+        $meId = (int)($jwtPayload['id'] ?? 1);
 
 
         // ==========================================

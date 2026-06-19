@@ -643,11 +643,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
 
             <!-- Bottom Page Footer -->
-            <div class="form-footer">
-                <a href="#">Support</a> | 
-                <a href="#">Pricing</a> | 
-                <a href="#">Terms</a> | 
-                <a href="#">Privacy</a>
+            <div class="form-footer" style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
+                <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+                    <a href="#">Support</a> | 
+                    <a href="#">Pricing</a> | 
+                    <a href="#">Terms</a> | 
+                    <a href="#">Privacy</a>
+                </div>
+                <div style="margin-top: 6px; font-size: 11px; color: var(--text-muted);">
+                    &copy; 2026 Vyala Software TaskPad. All rights reserved. Software Version 2.0.0
+                </div>
             </div>
 
         </div>

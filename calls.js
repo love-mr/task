@@ -53,7 +53,16 @@ function initPeerJS() {
 
 // Start Call (Initiator)
 async function startCall(discussionId, type) {
-    if (!peer) return alert("Call system not initialized");
+    if (!peer || !peer.open) {
+        // Try re-initializing PeerJS if not ready
+        if (window.vyalaMeId) {
+            initPeerJS();
+            setTimeout(() => startCall(discussionId, type), 2000);
+        } else {
+            alert("Call system not ready. Please wait a moment and try again.");
+        }
+        return;
+    }
     currentDiscussionId = discussionId;
     currentCallType = type;
     
@@ -80,14 +89,20 @@ async function startCall(discussionId, type) {
             data.members.forEach(member => {
                 if (member.id != window.vyalaMeId) {
                     const targetPeerId = 'vyala_emp_' + member.id;
-                    const call = peer.call(targetPeerId, localStream);
-                    handleMediaConnection(call);
+                    try {
+                        const call = peer.call(targetPeerId, localStream);
+                        if (call) handleMediaConnection(call);
+                    } catch(callErr) {
+                        console.warn('Could not call peer', targetPeerId, callErr);
+                    }
                 }
             });
         }
     } catch (err) {
         console.error("Failed to get local stream", err);
-        alert("Could not access camera/microphone.");
+        if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+        hideCallUI();
+        alert("Could not access camera/microphone. Please check permissions.");
     }
 }
 
@@ -113,27 +128,40 @@ async function answerCall(callId, discussionId, type) {
         // For anyone who already called us, answer them!
         for (let peerId in incomingCalls) {
             const call = incomingCalls[peerId];
-            call.answer(localStream);
-            handleMediaConnection(call);
+            try {
+                call.answer(localStream);
+                handleMediaConnection(call);
+            } catch(ansErr) {
+                console.warn('Error answering incoming call from', peerId, ansErr);
+            }
         }
 
         // To mesh into the group, fetch members and call those who haven't called us
-        const resp = await fetch('api.php?action=get_discussion_members&discussion_id=' + discussionId);
-        const data = await resp.json();
-        
-        if (data.success) {
-            data.members.forEach(member => {
-                if (member.id != window.vyalaMeId) {
-                    const targetPeerId = 'vyala_emp_' + member.id;
-                    if (!incomingCalls[targetPeerId]) {
-                        const call = peer.call(targetPeerId, localStream);
-                        handleMediaConnection(call);
+        if (peer && peer.open) {
+            const resp = await fetch('api.php?action=get_discussion_members&discussion_id=' + discussionId);
+            const data = await resp.json();
+            
+            if (data.success) {
+                data.members.forEach(member => {
+                    if (member.id != window.vyalaMeId) {
+                        const targetPeerId = 'vyala_emp_' + member.id;
+                        if (!incomingCalls[targetPeerId]) {
+                            try {
+                                const call = peer.call(targetPeerId, localStream);
+                                if (call) handleMediaConnection(call);
+                            } catch(callErr) {
+                                console.warn('Could not call peer', targetPeerId, callErr);
+                            }
+                        }
                     }
-                }
-            });
+                });
+            }
         }
     } catch (err) {
-        console.error("Failed to get local stream", err);
+        console.error("Failed to answer call", err);
+        if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+        hideCallUI();
+        alert("Could not access camera/microphone. Please check permissions.");
     }
 }
 
