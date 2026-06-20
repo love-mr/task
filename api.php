@@ -770,43 +770,6 @@ try {
             }
 
             $response = ['success' => true, 'messages' => $messages];
-        } else if ($action === 'start_call') {
-            $discId = (int) ($_POST['discussion_id'] ?? 0);
-            $type = trim($_POST['type'] ?? 'video');
-            if ($type === 'audio') {
-                $type = 'voice';
-            }
-            $meId = $jwtPayload['id'];
-            
-            if (!$discId) throw new Exception("Discussion ID required.");
-
-            // End any existing calls for this discussion
-            $pdo->prepare("UPDATE calls SET status = 'ended' WHERE discussion_id = ? AND status != 'ended'")->execute([$discId]);
-
-            // Start new call
-            $stmt = $pdo->prepare("INSERT INTO calls (discussion_id, caller_id, type, status) VALUES (?, ?, ?, 'ringing')");
-            $stmt->execute([$discId, $meId, $type]);
-            $callId = $pdo->lastInsertId();
-
-            $response = ['success' => true, 'call_id' => $callId];
-        } else if ($action === 'check_calls') {
-            $meId = $jwtPayload['id'];
-            // Check for ringing calls in discussions the user is a part of
-            $stmt = $pdo->prepare("
-                SELECT c.id as call_id, c.discussion_id, c.caller_id, c.type, d.title as discussion_title, e.name as caller_name, e.avatar as caller_avatar, d.is_direct
-                FROM calls c
-                JOIN discussion_members dm ON c.discussion_id = dm.discussion_id
-                JOIN discussions d ON c.discussion_id = d.id
-                JOIN employees e ON c.caller_id = e.id
-                WHERE dm.employee_id = ? AND c.caller_id != ? AND (c.status = 'ringing' OR c.status = 'active')
-                ORDER BY c.id DESC LIMIT 1
-            ");
-            $stmt->execute([$meId, $meId]);
-            $call = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($call && $call['type'] === 'voice') {
-                $call['type'] = 'audio';
-            }
-            $response = ['success' => true, 'call' => $call];
         } else if ($action === 'delete_discussion') {
             $discId = (int)($_POST['discussion_id'] ?? 0);
             $meId = $jwtPayload['id'];
@@ -815,10 +778,10 @@ try {
                 throw new Exception("Discussion ID is required.");
             }
             
-            // Allow Admin or the Creator (check logic here, for now any member can delete)
+            // Allow Admin, Super Admin, Project Lead, or any member to delete
             $checkMem = $pdo->prepare("SELECT COUNT(*) FROM `discussion_members` WHERE discussion_id = ? AND employee_id = ?");
             $checkMem->execute([$discId, $meId]);
-            if ($checkMem->fetchColumn() == 0 && $jwtPayload['role'] !== 'Admin') {
+            if ($checkMem->fetchColumn() == 0 && !in_array($jwtPayload['role'], ['Admin', 'Super Admin', 'Project Lead'])) {
                 throw new Exception("You do not have permission to delete this discussion.");
             }
             
@@ -826,17 +789,8 @@ try {
             $pdo->prepare("DELETE FROM `discussion_messages` WHERE discussion_id = ?")->execute([$discId]);
             $pdo->prepare("DELETE FROM `discussion_members` WHERE discussion_id = ?")->execute([$discId]);
             $pdo->prepare("DELETE FROM `discussion_keys` WHERE discussion_id = ?")->execute([$discId]);
-            $pdo->prepare("DELETE FROM `calls` WHERE discussion_id = ?")->execute([$discId]);
             $pdo->prepare("DELETE FROM `discussions` WHERE id = ?")->execute([$discId]);
             
-            $response = ['success' => true];
-        } else if ($action === 'answer_call') {
-            $callId = (int)($_POST['call_id'] ?? 0);
-            $pdo->prepare("UPDATE calls SET status = 'active' WHERE id = ?")->execute([$callId]);
-            $response = ['success' => true];
-        } else if ($action === 'end_call') {
-            $discId = (int)($_POST['discussion_id'] ?? 0);
-            $pdo->prepare("UPDATE calls SET status = 'ended' WHERE discussion_id = ? AND status != 'ended'")->execute([$discId]);
             $response = ['success' => true];
         } else if ($action === 'upload_document') {
             $meId = $jwtPayload['id'];
@@ -1939,13 +1893,20 @@ try {
             $project = $stmtP->fetch(PDO::FETCH_ASSOC);
             if (!$project) throw new Exception('Project not found.');
 
+            // Verify if sequence/timeline has been created (tasks with sequence_order > 0)
+            $stmtCheck = $pdo->prepare("SELECT COUNT(*) FROM `tasks` WHERE `project_id` = ? AND `sequence_order` > 0");
+            $stmtCheck->execute([$projectId]);
+            if ($stmtCheck->fetchColumn() == 0) {
+                throw new Exception("No timeline has been created for this project yet.");
+            }
+
             $stmtT = $pdo->prepare(
                 "SELECT t.id, t.title, t.priority, t.status, t.due_date, t.estimated_duration,
                         t.sequence_order, t.depends_on, e.name as assignee
                  FROM `tasks` t
                  LEFT JOIN `employees` e ON t.assigned_to = e.id
-                 WHERE t.project_id = ?
-                 ORDER BY COALESCE(t.sequence_order, t.id) ASC"
+                 WHERE t.project_id = ? AND t.sequence_order > 0
+                 ORDER BY t.sequence_order ASC"
             );
             $stmtT->execute([$projectId]);
             $rawTasks = $stmtT->fetchAll(PDO::FETCH_ASSOC);

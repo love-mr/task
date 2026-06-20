@@ -359,6 +359,7 @@ try {
         SELECT p.*, c.name as client_name,
                (SELECT COUNT(*) FROM `tasks` t WHERE t.project_id = p.id) as total_tasks,
                (SELECT COUNT(*) FROM `tasks` t WHERE t.project_id = p.id AND t.status = 'Completed') as completed_tasks,
+               (SELECT COUNT(*) FROM `documents` d WHERE d.project_id = p.id) as total_documents,
                (SELECT GROUP_CONCAT(pm.employee_id SEPARATOR ',') FROM `project_members` pm WHERE pm.project_id = p.id) as member_ids
         FROM `projects` p
         LEFT JOIN `clients` c ON p.client_id = c.id
@@ -1586,10 +1587,10 @@ try {
                                     <?php endforeach; ?>
                                 </select>
                             </div>
-                            <button class="btn btn-secondary" id="btn-load-timeline" style="width:100%; background: linear-gradient(135deg,#1e3a5f,#2563eb); color:#fff; border:none;">
+                            <button class="btn btn-secondary" id="btn-load-timeline" style="display: none; width:100%; background: linear-gradient(135deg,#1e3a5f,#2563eb); color:#fff; border:none;">
                                 <i data-lucide="calendar-days" style="width:14px;height:14px;vertical-align:middle;margin-right:5px;"></i>Load Timeline
                             </button>
-                            <p id="timeline-load-hint" style="margin-top:10px; font-size:11px; color:#94a3b8; text-align:center;">Select a project and click Load Timeline to view its Gantt chart.</p>
+                            <p id="timeline-load-hint" style="margin-top:10px; font-size:11px; color:#94a3b8; text-align:center;">Select a project to view its Gantt chart.</p>
                         </div>
                     </div>
 
@@ -2076,12 +2077,6 @@ try {
                                     </div>
                                 </div>
                                 <div class="chat-window-actions" style="display: flex; align-items: center; gap: 14px;">
-                                    <button id="chat-call-audio-btn" title="Voice Call" style="background:transparent; border:none; cursor:pointer; color:var(--text-muted); display:flex; align-items:center; justify-content:center; padding:2px;" onclick="if(window.currentActiveDiscussionId) window.vyalaCalls.startCall(window.currentActiveDiscussionId, 'audio')" onmouseover="this.style.color='#2563eb'" onmouseout="this.style.color='var(--text-muted)'">
-                                        <i data-lucide="phone" style="width: 16px; height: 16px;"></i>
-                                    </button>
-                                    <button id="chat-call-video-btn" title="Video Call" style="background:transparent; border:none; cursor:pointer; color:var(--text-muted); display:flex; align-items:center; justify-content:center; padding:2px;" onclick="if(window.currentActiveDiscussionId) window.vyalaCalls.startCall(window.currentActiveDiscussionId, 'video')" onmouseover="this.style.color='#2563eb'" onmouseout="this.style.color='var(--text-muted)'">
-                                        <i data-lucide="video" style="width: 16px; height: 16px;"></i>
-                                    </button>
                                     <button id="chat-header-members" title="Manage Members" style="background:transparent; border:none; cursor:pointer; color:var(--text-muted); display:flex; align-items:center; justify-content:center; padding:2px;"><i data-lucide="users" style="width: 16px; height: 16px;"></i></button>
                                     <button id="chat-delete-btn" title="Delete Discussion" style="background:transparent; border:none; cursor:pointer; color:#ef4444; display:flex; align-items:center; justify-content:center; padding:2px;"><i data-lucide="trash-2" style="width: 16px; height: 16px;"></i></button>
                                     <button id="chat-close-btn" title="Close Chat" style="background:transparent; border:none; cursor:pointer; color:#64748b; display:flex; align-items:center; justify-content:center; padding:2px;" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#64748b'"><i data-lucide="x" style="width: 18px; height: 18px;"></i></button>
@@ -2162,7 +2157,7 @@ try {
                                             <div class="folder-icon"><i data-lucide="folder" style="width: 24px; height: 24px; fill: #fbbf24;"></i></div>
                                             <div class="folder-info">
                                                 <span class="folder-name" title="<?= htmlspecialchars($p['name']) ?>"><?= htmlspecialchars($p['name']) ?></span>
-                                                <span class="folder-count"><?= $p['total_tasks'] ?> items</span>
+                                                <span class="folder-count"><?= $p['total_documents'] ?> items</span>
                                             </div>
                                         </div>
                                     <?php endforeach; ?>
@@ -2219,7 +2214,7 @@ try {
                                                         $docCat = 'image';
                                                     }
                                                 ?>
-                                                    <tr class="document-row" data-doc-name="<?= htmlspecialchars(strtolower($doc['name'])) ?>" data-doc-cat="<?= $docCat ?>">
+                                                    <tr class="document-row" data-doc-name="<?= htmlspecialchars(strtolower($doc['name'])) ?>" data-doc-cat="<?= $docCat ?>" data-project-name="<?= htmlspecialchars(strtolower($doc['project_name'] ?? '')) ?>">
                                                         <td style="text-align: left;">
                                                             <div style="display: flex; align-items: center; gap: 8px;">
                                                                 <i data-lucide="<?= $icon ?>" style="width: 18px; height: 18px; color: <?= $color ?>;"></i>
@@ -3628,7 +3623,6 @@ try {
             </div>
         </div>
     </div>
-    </div>
     </div> <!-- Closing content-area -->
 
             <!-- Footer -->
@@ -4896,61 +4890,10 @@ ${p.description ? `<div class="section"><div class="section-title">Project Notes
     });
     </script>
 
-    <!-- Call Overlay and Popup -->
-    <div id="call-overlay"
-        style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #0f172a; z-index: 9999; flex-direction: column; align-items: center; justify-content: center; overflow: hidden;">
-        
-        <div style="position: absolute; top: 40px; text-align: center; width: 100%; z-index: 10;">
-            <h2 style="color: white; margin-bottom: 5px; font-weight: 500;">Active Call</h2>
-            <span style="color: #cbd5e1; font-size: 14px;"><i data-lucide="lock" style="width: 12px; height: 12px; display: inline-block; vertical-align: middle;"></i> End-to-end encrypted</span>
-        </div>
-
-        <div id="call-video-grid"
-            style="display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; align-items: center; width: 100%; height: 100%; padding: 100px 20px; box-sizing: border-box;">
-            <!-- Videos go here -->
-        </div>
-
-        <div style="position: absolute; bottom: 40px; background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); padding: 15px 30px; border-radius: 40px; display: flex; gap: 20px; z-index: 10; box-shadow: 0 4px 15px rgba(0,0,0,0.3);">
-            <button id="btn-toggle-mute" onclick="vyalaCalls.toggleMute()" class="btn"
-                style="background: rgba(255,255,255,0.1); border: none; width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; transition: all 0.2s;"><i
-                    data-lucide="mic"></i></button>
-            <button id="btn-toggle-video" onclick="vyalaCalls.toggleVideo()" class="btn"
-                style="background: rgba(255,255,255,0.1); border: none; width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; transition: all 0.2s;"><i
-                    data-lucide="video"></i></button>
-            <button onclick="vyalaCalls.endCall()" class="btn"
-                style="background: #ef4444; border: none; width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; transition: all 0.2s;"><i
-                    data-lucide="phone-off"></i></button>
-        </div>
-    </div>
-
-    <div id="incoming-call-popup"
-        style="display: none; position: fixed; top: 30px; left: 50%; transform: translateX(-50%); background: #1e293b; padding: 16px 24px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 10000; align-items: center; gap: 20px; min-width: 320px; color: white; justify-content: space-between;">
-        <div style="display: flex; flex-direction: column; gap: 4px;">
-            <h4 id="incoming-caller-name" style="margin: 0; font-weight: 500; font-size: 16px;">Incoming Call...</h4>
-            <span id="incoming-call-type" style="color: #94a3b8; font-size: 13px;">Video Call</span>
-        </div>
-        <div style="display: flex; gap: 16px;">
-            <button
-                onclick="vyalaCalls.hideIncomingCallPopup(); vyalaCalls.declineCall(document.getElementById('incoming-call-popup').getAttribute('data-call-id'));"
-                style="background: #ef4444; border: none; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; color: white;"><i data-lucide="phone-off" style="width: 20px; height: 20px;"></i></button>
-            <button
-                onclick="vyalaCalls.answerCall(document.getElementById('incoming-call-popup').getAttribute('data-call-id'), document.getElementById('incoming-call-popup').getAttribute('data-discussion-id'), document.getElementById('incoming-call-popup').getAttribute('data-type')); vyalaCalls.hideIncomingCallPopup();"
-                style="background: #10b981; border: none; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; color: white;"><i data-lucide="phone" style="width: 20px; height: 20px;"></i></button>
-        </div>
-    </div>
-
-    <!-- E2EE Encryption & Calls Logic -->
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <!-- E2EE Encryption Logic -->
     <script src="e2ee.js?v=<?= time() ?>"></script>
-    <script src="calls.js?v=<?= time() ?>"></script>
     <script>
         window.vyalaMeId = <?= $jwtPayload['id'] ?>;
-        // Init PeerJS after load
-        document.addEventListener('DOMContentLoaded', () => {
-            if (window.vyalaCalls && window.vyalaMeId) {
-                window.vyalaCalls.initPeerJS();
-            }
-        });
     </script>
 </body>
 

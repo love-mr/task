@@ -261,18 +261,6 @@ try {
         INDEX (`employee_id`)
     ) ENGINE=InnoDB;");
 
-    // Create calls table
-    $pdo->exec("CREATE TABLE IF NOT EXISTS `calls` (
-        `id` INT AUTO_INCREMENT PRIMARY KEY,
-        `discussion_id` INT NOT NULL,
-        `caller_id` INT NOT NULL,
-        `type` VARCHAR(50) NOT NULL,
-        `status` VARCHAR(50) NOT NULL DEFAULT 'ringing',
-        `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX (`discussion_id`),
-        INDEX (`caller_id`),
-        INDEX (`status`)
-    ) ENGINE=InnoDB;");
 
     // Create goal_tracker table
     $pdo->exec("CREATE TABLE IF NOT EXISTS `goal_tracker` (

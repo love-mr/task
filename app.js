@@ -1142,6 +1142,7 @@ function setupSubTabAndAccordionBindings() {
                         const r = await fetch('api.php?action=delete_discussion', { method: 'POST', body: fd });
                         const res = await r.json();
                         if (res.success) {
+                            alert('Discussion deleted successfully.');
                             item.remove();
                             // If it was active, close chat window
                             if (window.currentActiveDiscussionId == discId) {
@@ -1983,8 +1984,9 @@ function filterAndPaginateDocs() {
     const filteredRows = rows.filter(row => {
         const name = (row.getAttribute('data-doc-name') || '').toLowerCase();
         const cat = row.getAttribute('data-doc-cat') || 'other';
+        const projectName = (row.getAttribute('data-project-name') || '').toLowerCase();
         
-        const matchesQuery = name.includes(query);
+        const matchesQuery = name.includes(query) || projectName.includes(query);
         const matchesCat = currentDocsFilterCat === 'all' || cat === currentDocsFilterCat;
         
         return matchesQuery && matchesCat;
@@ -2092,8 +2094,9 @@ function filterAndPaginateDocs() {
     const filteredRows = rows.filter(row => {
         const name = (row.getAttribute('data-doc-name') || '').toLowerCase();
         const cat = row.getAttribute('data-doc-cat') || 'other';
+        const projectName = (row.getAttribute('data-project-name') || '').toLowerCase();
         
-        const matchesQuery = name.includes(query);
+        const matchesQuery = name.includes(query) || projectName.includes(query);
         const matchesCat = currentDocsFilterCat === 'all' || cat === currentDocsFilterCat;
         
         return matchesQuery && matchesCat;
@@ -3495,37 +3498,70 @@ function setupLayoutModule() {
     });
 
     // ---- Load Existing Timeline ----
-    if (btnLoadTimeline) {
-        btnLoadTimeline.addEventListener('click', function() {
-            const projectId = document.getElementById('timeline-load-project').value;
-            if (!projectId) { alert('Please select a project to view.'); return; }
-
+    const timelineProjSelect = document.getElementById('timeline-load-project');
+    if (timelineProjSelect) {
+        timelineProjSelect.addEventListener('change', function() {
+            const projectId = timelineProjSelect.value;
             const hint = document.getElementById('timeline-load-hint');
+            
+            if (!projectId) {
+                const area = document.getElementById('layout-timeline-area');
+                if (area) area.style.display = 'none';
+                if (hint) hint.textContent = 'Select a project to view its Gantt chart.';
+                return;
+            }
+
             if (hint) hint.textContent = '⏳ Loading...';
-            btnLoadTimeline.disabled = true;
 
             fetch(`api.php?action=get_timeline&project_id=${projectId}`)
             .then(r => r.json())
             .then(res => {
-                btnLoadTimeline.disabled = false;
-                if (hint) hint.textContent = 'Select a project and click Load Timeline to view its Gantt chart.';
+                if (hint) hint.textContent = 'Select a project to view its Gantt chart.';
                 if (res.success) {
                     if (!res.tasks || res.tasks.length === 0) {
-                        alert('No tasks found for this project. Generate a layout sequence first.');
+                        showTimelineError('Timeline has not been created for this project yet.');
                         return;
                     }
                     renderGanttTimeline(res.project.name, res.tasks, null, res.project.due_date);
                 } else {
-                    alert('Error: ' + res.message);
+                    showTimelineError(res.message || 'Timeline has not been created for this project yet.');
                 }
             })
             .catch(err => {
-                btnLoadTimeline.disabled = false;
-                if (hint) hint.textContent = 'Select a project and click Load Timeline to view its Gantt chart.';
+                if (hint) hint.textContent = 'Select a project to view its Gantt chart.';
                 console.error(err);
-                alert('Network error loading timeline.');
+                showTimelineError('Network error loading timeline.');
             });
         });
+    }
+
+    if (btnLoadTimeline) {
+        btnLoadTimeline.addEventListener('click', function() {
+            if (timelineProjSelect) {
+                timelineProjSelect.dispatchEvent(new Event('change'));
+            }
+        });
+    }
+}
+
+function showTimelineError(message) {
+    const area = document.getElementById('layout-timeline-area');
+    const chart = document.getElementById('layout-gantt-chart');
+    const titleEl = document.getElementById('tl-project-title');
+    const metaEl = document.getElementById('tl-project-meta');
+    
+    if (area && chart) {
+        area.style.display = 'block';
+        if (titleEl) titleEl.textContent = 'Project Timeline';
+        if (metaEl) metaEl.textContent = '';
+        chart.innerHTML = `
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; text-align: center; background: #fff; border: 1px dashed #cbd5e1; border-radius: 12px; margin-top: 10px; width: 100%; box-sizing: border-box;">
+                <i data-lucide="calendar-off" style="width: 48px; height: 48px; color: #94a3b8; margin-bottom: 12px;"></i>
+                <h3 style="font-size: 14.5px; font-weight: 600; color: #475569; margin: 0 0 4px 0;">No Timeline Configured</h3>
+                <p style="font-size: 13px; color: #64748b; margin: 0;">${message}</p>
+            </div>
+        `;
+        if (window.lucide) window.lucide.createIcons();
     }
 }
 
